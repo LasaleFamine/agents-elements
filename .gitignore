@@ -1,0 +1,15 @@
+# Swift / SwiftPM build output
+.build/
+.swiftpm/
+
+# Built app bundle and release artifacts (regenerate with ./build.sh)
+AgentsElements.app/
+dist/
+AppIcon.iconset/
+
+# Config backups the app writes before a toggle
+*.agents-elements.bak
+
+# macOS / misc
+.DS_Store
+*.png.tmp
