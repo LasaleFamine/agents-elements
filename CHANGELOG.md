@@ -4,7 +4,18 @@ All notable changes to this project are documented here.
 
 ## [1.0.1] — 2026-06-14
 
-- 
+Docs and release tooling — no changes to app behavior.
+
+### Added
+- `Tools/release.sh` — one-command release: bumps the version, updates this changelog, tags,
+  and pushes; CI then builds the `.app`, zips it, and publishes the GitHub Release.
+- Tag-triggered release CI job that attaches `AgentsElements-<version>.zip` to the release.
+
+### Changed
+- Clearer first-launch / Gatekeeper instructions for macOS 15 (quarantine removal and the
+  System Settings → Privacy & Security → Open Anyway path), in the README and on the release page.
+- GitHub Releases now lead with install instructions (prepended to the changelog in CI).
+- Bumped `actions/checkout` to v5 (Node 24).
 
 ## [1.0.0] — 2026-06-14
 

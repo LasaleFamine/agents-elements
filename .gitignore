@@ -13,3 +13,6 @@ AppIcon.iconset/
 # macOS / misc
 .DS_Store
 *.png.tmp
+
+# Local launch / marketing drafts — not for publishing
+/launch-kit.md
