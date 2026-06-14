@@ -84,12 +84,24 @@ resumable/stale and recall uses `codex resume <id>`.
 
 1. Grab `AgentsElements-x.y.z.zip` from the [Releases](https://github.com/LasaleFamine/agents-elements/releases) page and unzip it.
 2. Move **AgentsElements.app** to `/Applications`.
-3. The app is open-source and **ad-hoc signed** (not notarized), so on first launch macOS
-   Gatekeeper will warn. Either **right-click → Open**, or clear the quarantine flag:
+3. The app is open-source and **ad-hoc signed** (not notarized by Apple), so macOS Gatekeeper
+   blocks it on first launch with *"Apple could not verify…"*. To open it, either:
 
+   **Terminal** — remove the download quarantine flag, then open:
    ```bash
    xattr -dr com.apple.quarantine /Applications/AgentsElements.app
+   open /Applications/AgentsElements.app
    ```
+
+   **or the GUI** — double-click (you'll get the block), then go to **System Settings →
+   Privacy & Security**, find *"AgentsElements was blocked…"*, click **Open Anyway**, and
+   confirm. (On macOS 15 Sequoia the old Control-click → Open shortcut no longer works for
+   un-notarized apps — use this or the Terminal command above.)
+
+> [!NOTE]
+> This warning is normal for open-source apps distributed outside the App Store without a
+> paid Apple Developer ID + notarization. You only need to do it once. Prefer no warning at
+> all? **Build from source** — locally built apps aren't quarantined.
 
 ### Build from source
 
