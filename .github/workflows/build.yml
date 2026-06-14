@@ -45,6 +45,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          cat .github/release-header.md CHANGELOG.md > RELEASE_NOTES.md
           gh release create "${GITHUB_REF_NAME}" dist/AgentsElements-*.zip \
             --title "${GITHUB_REF_NAME}" \
-            --notes-file CHANGELOG.md
+            --notes-file RELEASE_NOTES.md
