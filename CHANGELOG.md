@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented here.
 
+## [1.0.1] — 2026-06-14
+
+- 
+
 ## [1.0.0] — 2026-06-14
 
 First public release. Designed and built end-to-end by an AI agent (Claude, in Claude Code).
