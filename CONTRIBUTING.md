@@ -57,6 +57,20 @@ brand. To rebuild `AppIcon.icns`:
 ./Tools/make-icon.sh
 ```
 
+## Releasing
+
+One command bumps the version, commits, tags, and pushes — CI then builds the `.app`, zips
+it, and publishes the GitHub Release (notes = install header + `CHANGELOG.md`):
+
+```bash
+./Tools/release.sh patch     # 1.0.0 -> 1.0.1   (also: minor | major | an explicit X.Y.Z)
+./Tools/release.sh 1.2.0 -n  # --dry-run / -n shows the plan without changing anything
+```
+
+It refuses to run on a dirty tree or to reuse an existing tag, and adds a `CHANGELOG.md` stub
+for the new version if one isn't there yet (edit it first for real notes, or tidy the release
+on GitHub afterwards).
+
 ## Safety rules for code that writes to disk
 
 The app is read-only **except** two user-driven actions, and any change here must preserve
