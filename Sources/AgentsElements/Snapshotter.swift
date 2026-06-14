@@ -43,6 +43,111 @@ enum Snapshotter {
         }
         exit(0)
     }
+
+    // MARK: - Product tour (writes numbered frames; Tools/make-demo-video.sh encodes them)
+
+    @MainActor
+    static func renderTour(to dir: String) -> Never {
+        let store = ElementsStore()
+        store.loadDemo()
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+
+        let size = CGSize(width: 1240, height: 860)
+        let scale: CGFloat = 1.5
+
+        func png(_ view: AnyView) -> Data? {
+            let r = ImageRenderer(content: view.frame(width: size.width, height: size.height)
+                .environment(\.colorScheme, .dark))
+            r.scale = scale
+            guard let img = r.nsImage, let tiff = img.tiffRepresentation,
+                  let rep = NSBitmapImageRep(data: tiff) else { return nil }
+            return rep.representation(using: .png, properties: [:])
+        }
+
+        let scenes: [AnyView] = [
+            AnyView(TourTitle()),
+            AnyView(captioned(SnapshotPoster(store: store), "Everything your agents installed — in one place")),
+            AnyView(captioned(InsightsPoster(store: store), "Token & cost — Claude and GPT, side by side")),
+            AnyView(captioned(RelationshipsPoster(store: store), "Who can use what")),
+            AnyView(captioned(MarkdownPoster(store: store), "Rendered Markdown previews")),
+            AnyView(TourOutro()),
+        ]
+        let stills = scenes.map { png($0) }
+
+        var idx = 1
+        func emit(_ data: Data?) {
+            guard let data else { return }
+            try? data.write(to: URL(fileURLWithPath: dir).appendingPathComponent(String(format: "frame_%04d.png", idx)))
+            idx += 1
+        }
+
+        let titleHold = 16, hold = 22, outroHold = 26, cross = 6
+        for _ in 0..<titleHold { emit(stills[0]) }
+        for i in 0..<scenes.count - 1 {
+            for s in 1...cross {
+                let t = Double(s) / Double(cross + 1)
+                emit(png(AnyView(ZStack { scenes[i].opacity(1 - t); scenes[i + 1].opacity(t) })))
+            }
+            let h = (i + 1 == scenes.count - 1) ? outroHold : hold
+            for _ in 0..<h { emit(stills[i + 1]) }
+        }
+        FileHandle.standardError.write(Data("rendered \(idx - 1) tour frames to \(dir)\n".utf8))
+        exit(0)
+    }
+
+    /// Overlays a lower-third caption on a scene.
+    @MainActor
+    private static func captioned(_ content: some View, _ text: String) -> some View {
+        ZStack(alignment: .bottomLeading) {
+            content
+            Text(text)
+                .font(.system(size: 27, weight: .semibold)).foregroundStyle(.white)
+                .padding(.horizontal, 22).padding(.vertical, 13)
+                .background(.black.opacity(0.62), in: Capsule())
+                .overlay(Capsule().strokeBorder(Palette.accent.opacity(0.7), lineWidth: 1.2))
+                .shadow(color: .black.opacity(0.6), radius: 16, y: 4)
+                .padding(36)
+        }
+        .frame(width: 1240, height: 860)
+    }
+}
+
+private struct TourTitle: View {
+    var body: some View {
+        ZStack {
+            DeckBackground()
+            VStack(spacing: 22) {
+                BrandMark(size: 112)
+                Text("Agents Elements")
+                    .font(.system(size: 66, weight: .bold)).foregroundStyle(Palette.textPrimary)
+                Text("One control center for everything your AI coding agents\ninstall — across Claude Code and Codex.")
+                    .font(.title2).foregroundStyle(Palette.textSecondary).multilineTextAlignment(.center)
+                AIBuiltBadge().scaleEffect(1.45).padding(.top, 6)
+            }
+        }
+    }
+}
+
+private struct TourOutro: View {
+    var body: some View {
+        ZStack {
+            DeckBackground()
+            VStack(spacing: 20) {
+                BrandMark(size: 100)
+                Text("Agents Elements")
+                    .font(.system(size: 56, weight: .bold)).foregroundStyle(Palette.textPrimary)
+                AIBuiltBadge().scaleEffect(1.35)
+                VStack(spacing: 7) {
+                    Text("Open source · MIT · macOS 14+")
+                        .font(.title3).foregroundStyle(Palette.textSecondary)
+                    Text("github.com/LasaleFamine/agents-elements")
+                        .font(.title3.monospaced()).foregroundStyle(Palette.accent2)
+                }
+                .padding(.top, 10)
+            }
+        }
+    }
 }
 
 /// Poster for the "who can use what" Relationships view (agents → tools lens).

@@ -1,6 +1,8 @@
 <div align="center">
 
-![Agents Elements](docs/hero.png)
+![Agents Elements](docs/demo.gif)
+
+_A 13-second tour — higher-quality [MP4](docs/demo.mp4)._
 
 # Agents Elements
 

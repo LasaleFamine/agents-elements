@@ -16,6 +16,9 @@ struct AgentsElementsApp: App {
         if let i = args.firstIndex(of: "--render-icon"), i + 1 < args.count {
             MainActor.assumeIsolated { IconRenderer.renderAndExit(to: args[i + 1]) }
         }
+        if let i = args.firstIndex(of: "--render-tour"), i + 1 < args.count {
+            MainActor.assumeIsolated { Snapshotter.renderTour(to: args[i + 1]) }
+        }
         if let i = args.firstIndex(of: "--render"), i + 1 < args.count {
             let mode = (i + 2 < args.count) ? args[i + 2] : "overview"
             MainActor.assumeIsolated { Snapshotter.render(to: args[i + 1], mode: mode) }
