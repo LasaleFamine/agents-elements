@@ -45,11 +45,14 @@ enable/disable plugins and skills — for **Claude Code and Codex**, together or
 - **🗂 Inventory everything** — skills, subagents, commands, plugins, MCP servers and hooks in
   one searchable list, each tagged with its source and provider. Bodies render as **Markdown**
   (headings, code, lists, links) with a Rendered/Raw toggle.
-- **🟢 Live & historical sessions** — Live / Resumable / Stale at a glance, with model, branch,
-  message count, token usage and last prompt. **Filter by project**, **choose what counts as
-  stale** (1–90 days, remembered), and **⌘/⇧-click to select many at once**. Copy a recall
-  command, Reveal in Finder, or clean up transcripts to the Trash — one, a batch, or every
-  stale one (recoverable, and never offered for live sessions).
+- **🟢 Live & historical sessions** — every session named by **what it's about**, not the
+  folder it ran in: both CLIs already generate a title and write it to disk, and this reads
+  it (falling back to your opening prompt, and saying which you're looking at). Live /
+  Resumable / Stale at a glance, with model, branch, turns, token usage and last prompt.
+  **Search by title**, **filter by project**, **choose what counts as stale** (1–90 days,
+  remembered), and **⌘/⇧-click to select many at once**. Copy a recall command, Reveal in
+  Finder, or clean up transcripts to the Trash — one, a batch, or every stale one
+  (recoverable, and never offered for live sessions).
 - **📊 Insights** — estimated spend all-time and last 7 days, **by project and by model with
   Claude and GPT side by side**, plus a GitHub-style activity heatmap. Override any rate via
   `~/.config/agents-elements/pricing.json`.

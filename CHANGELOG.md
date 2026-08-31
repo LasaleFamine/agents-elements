@@ -5,6 +5,16 @@ All notable changes to this project are documented here.
 ## [Unreleased]
 
 ### Added
+- **Sessions say what they're about.** Every session now carries a real title instead of
+  showing its folder name. Both CLIs already generate one and write it to disk — Claude Code
+  as `ai-title` / `custom-title` records inside the transcript, Codex as a row in its own
+  SQLite thread catalog — and neither was being read. A name you set yourself wins over a
+  generated one, which wins over the opening prompt; the detail pane says which you're
+  looking at, and flags a title as vague when the session opened mid-thread ("Continue
+  coding session"). Titles are searchable.
+- Session rows now show the project and git branch on their second line, and the detail
+  pane counts **turns you actually typed** rather than total messages — on a tool-heavy
+  session those differ by two orders of magnitude.
 - **Configurable staleness** — pick how many days of inactivity make a session stale
   (1–90) from the Sessions filter bar. The choice is remembered and applied live, with no
   rescan, and the Overview health row follows it.
@@ -26,6 +36,19 @@ All notable changes to this project are documented here.
 - **Loading is staged.** The light inventory (skills, subagents, commands, plugins, MCP,
   hooks, plans, tasks) is scanned and shown first, so the window has real content while the
   transcript corpus is still being read; the Sessions view says so while it waits.
+
+### Fixed
+- **Codex sessions no longer include Codex's own internal threads.** Roughly half the
+  rollouts on disk are `subagent` and `guardian_review` threads the agent starts for itself;
+  they were counted as your sessions and inflated every total. Filtered on `thread_source`.
+- Codex rows showed their title twice — the "last prompt" line was the thread name again,
+  not a prompt. It now shows the last thing you actually typed.
+- Codex sessions were missing their git branch and start time, both of which were already
+  in the rollout and simply discarded.
+- The last prompt is read from the CLI's own `last-prompt` record rather than reconstructed
+  by walking backwards through the transcript. That walk had a fixed budget which tool
+  results exhausted, so some sessions showed no prompt at all and others showed
+  `[Request interrupted by user]`.
 
 ## [1.0.1] — 2026-06-14
 
