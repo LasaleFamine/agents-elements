@@ -157,7 +157,7 @@ struct OverviewContent: View {
                     healthRow("Storage used by sessions", Format.bytes(store.totalSessionBytes),
                               icon: "internaldrive", tint: .blue)
                     Divider()
-                    healthRow("Stale sessions (>14d)", "\(store.staleSessions.count)",
+                    healthRow("Stale sessions (>\(store.staleDays)d)", "\(store.staleSessions.count)",
                               icon: "clock.badge.xmark", tint: store.staleSessions.isEmpty ? .green : .orange,
                               hint: store.staleSessions.isEmpty ? nil : "cleanup candidates")
                     Divider()

@@ -6,12 +6,19 @@ struct SessionsView: View {
 
     @State private var query = ""
     @State private var filter: SessionState?
-    @State private var selection: Session.ID?
-    @State private var confirmBulk = false
+    @State private var projectFilter: String?           // Session.projectKey; nil = every project
+    @State private var selection: Set<Session.ID> = []
+    @State private var confirmStaleCleanup = false
+    @State private var confirmSelectionDelete = false
+    /// Snapshot of what the open confirmation dialog is about to delete, so the
+    /// prompt and the action can never disagree with each other.
+    @State private var pendingDelete: [Session] = []
+    @State private var pendingLiveCount = 0
 
     private var filtered: [Session] {
         store.sessions.filter { s in
             (filter == nil || s.state == filter)
+            && (projectFilter == nil || s.projectKey == projectFilter)
             && (query.isEmpty
                 || s.projectName.localizedCaseInsensitiveContains(query)
                 || (s.name ?? "").localizedCaseInsensitiveContains(query)
@@ -20,45 +27,127 @@ struct SessionsView: View {
         }
     }
 
+    /// Selection is intersected with what's on screen, so a row you filtered away
+    /// can never be swept up in a batch delete.
+    private var selected: [Session] { filtered.filter { selection.contains($0.id) } }
+    private var deletable: [Session] { selected.filter { $0.state != .live } }
+
     var body: some View {
         HSplitView {
             VStack(spacing: 0) {
                 filterBar
                 Divider()
-                List(filtered, selection: $selection) { s in
-                    SessionRow(session: s).tag(s.id)
+                if store.isScanningSessions && store.sessions.isEmpty {
+                    VStack(spacing: 10) {
+                        ProgressView().controlSize(.small)
+                        Text("Reading transcripts…").font(.caption).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(filtered, selection: $selection) { s in
+                        SessionRow(session: s).tag(s.id)
+                    }
+                    .contextMenu(forSelectionType: Session.ID.self) { ids in
+                        rowMenu(for: ids)
+                    }
+                    .listStyle(.inset)
+                    .deckList()
                 }
-                .listStyle(.inset)
-                .deckList()
-                if !store.staleSessions.isEmpty {
-                    bulkBar
-                }
+                bottomBar
             }
             .frame(minWidth: 320, idealWidth: 380, maxWidth: 520)
+            .confirmationDialog(deleteTitle, isPresented: $confirmSelectionDelete, titleVisibility: .visible) {
+                Button("Move \(pendingDelete.count) to Trash", role: .destructive) { deletePending() }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(deleteMessage)
+            }
 
             Group {
-                if let id = selection, let s = store.sessions.first(where: { $0.id == id }) {
-                    SessionDetail(store: store, session: s, onDeleted: { selection = nil })
+                if selected.count > 1 {
+                    BatchSelectionDetail(sessions: selected,
+                                         deletable: deletable,
+                                         onDelete: { beginDelete(selected) },
+                                         onClear: { selection.removeAll() })
+                } else if let s = selected.first {
+                    SessionDetail(store: store, session: s, onDeleted: { selection.removeAll() })
+                } else if store.isScanningSessions && store.sessions.isEmpty {
+                    EmptyStateView(systemImage: "clock.arrow.circlepath",
+                                   title: "Reading transcripts…",
+                                   message: "The rest of your inventory is already loaded — sessions take a moment longer because every transcript has to be read.")
                 } else {
                     EmptyStateView(systemImage: "bubble.left.and.bubble.right",
                                    title: "Select a session",
-                                   message: "View its last prompt, token usage, and recall or clean-up options.")
+                                   message: "View its last prompt, token usage, and recall or clean-up options. ⌘-click or ⇧-click to select several and delete them in one go.")
                 }
             }
             .frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
         }
         .confirmationDialog("Move \(store.staleSessions.count) stale sessions to Trash?",
-                            isPresented: $confirmBulk, titleVisibility: .visible) {
+                            isPresented: $confirmStaleCleanup, titleVisibility: .visible) {
             Button("Move \(store.staleSessions.count) to Trash", role: .destructive) {
                 let stale = store.staleSessions
                 store.trash(stale)
+                selection.removeAll()
                 Task { await store.refresh() }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("These transcripts haven’t changed in over 14 days. They’ll go to the macOS Trash and can be restored.")
+            Text("These transcripts haven’t changed in over \(store.staleDays) \(store.staleDays == 1 ? "day" : "days"). They’ll go to the macOS Trash and can be restored.")
         }
     }
+
+    // MARK: Actions
+
+    private var deleteTitle: String {
+        pendingDelete.count == 1 ? "Move this session to Trash?" : "Move \(pendingDelete.count) sessions to Trash?"
+    }
+
+    private var deleteMessage: String {
+        let size = Format.bytes(pendingDelete.reduce(0) { $0 + $1.sizeBytes })
+        let live = pendingLiveCount > 0
+            ? "\n\n\(pendingLiveCount) live \(pendingLiveCount == 1 ? "session" : "sessions") will be kept — live sessions can’t be deleted."
+            : ""
+        return "\(size) of transcripts go to the macOS Trash — recoverable.\(live)"
+    }
+
+    /// Pass the raw selection: live sessions are dropped here (and counted, so the
+    /// prompt can say what it's holding back), and nothing downstream re-checks.
+    private func beginDelete(_ targets: [Session]) {
+        pendingDelete = targets.filter { $0.state != .live }
+        pendingLiveCount = targets.count - pendingDelete.count
+        guard !pendingDelete.isEmpty else { return }
+        confirmSelectionDelete = true
+    }
+
+    private func deletePending() {
+        guard !pendingDelete.isEmpty else { return }
+        store.trash(pendingDelete)
+        selection.removeAll()
+        Task { await store.refresh() }
+    }
+
+    @ViewBuilder
+    private func rowMenu(for ids: Set<Session.ID>) -> some View {
+        let targets = filtered.filter { ids.contains($0.id) }
+        if targets.isEmpty {
+            Button("Select all") { selection = Set(filtered.map(\.id)) }
+        } else {
+            if targets.count == 1, let s = targets.first {
+                Button("Reveal in Finder") { revealInFinder(s.path) }
+                Divider()
+            }
+            let removable = targets.filter { $0.state != .live }
+            Button(removable.count <= 1 ? "Move to Trash…" : "Move \(removable.count) to Trash…",
+                   role: .destructive) {
+                selection = ids
+                beginDelete(targets)
+            }
+            .disabled(removable.isEmpty)
+        }
+    }
+
+    // MARK: Filter bar
 
     private var filterBar: some View {
         VStack(spacing: 8) {
@@ -75,6 +164,17 @@ struct SessionsView: View {
             }
             .padding(.horizontal, 8).padding(.vertical, 5)
             .background(Palette.surfaceHi, in: RoundedRectangle(cornerRadius: 7))
+            HStack(spacing: 10) {
+                projectMenu
+                staleMenu
+                Spacer()
+                Button(selection.isEmpty ? "Select all" : "Clear") {
+                    if selection.isEmpty { selection = Set(filtered.map(\.id)) } else { selection.removeAll() }
+                }
+                .buttonStyle(.link)
+                .font(.caption)
+                .disabled(filtered.isEmpty)
+            }
         }
         .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 8)
     }
@@ -93,17 +193,197 @@ struct SessionsView: View {
         .buttonStyle(.plain)
     }
 
-    private var bulkBar: some View {
+    /// Scope the list to one project (keyed by cwd, so same-named dirs stay distinct).
+    private var projectMenu: some View {
+        Menu {
+            Toggle("All projects · \(store.sessions.count)", isOn: projectBinding(nil))
+            if !store.sessionProjects.isEmpty { Divider() }
+            ForEach(store.sessionProjects) { p in
+                Toggle("\(p.name) · \(p.count)", isOn: projectBinding(p.id))
+            }
+        } label: {
+            menuLabel(icon: "folder", text: projectLabel, active: projectFilter != nil)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help(projectFilter ?? "Show sessions from every project")
+    }
+
+    private func projectBinding(_ key: String?) -> Binding<Bool> {
+        Binding(get: { projectFilter == key },
+                set: { on in projectFilter = on ? key : nil })
+    }
+
+    private var projectLabel: String {
+        guard let key = projectFilter else { return "All projects" }
+        return store.sessionProjects.first { $0.id == key }?.name ?? (key as NSString).lastPathComponent
+    }
+
+    /// How old a transcript has to be before it counts as stale.
+    private var staleMenu: some View {
+        Menu {
+            Picker("Stale after", selection: $store.staleDays) {
+                ForEach(ElementsStore.staleDayOptions, id: \.self) { d in
+                    Text(d == 1 ? "1 day" : "\(d) days").tag(d)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            menuLabel(icon: "clock.badge.xmark",
+                      text: "Stale after \(store.staleDays)d",
+                      active: store.staleDays != 14)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Sessions untouched for longer than this are marked stale")
+    }
+
+    private func menuLabel(icon: String, text: String, active: Bool) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon).font(.caption2)
+            Text(text).font(.caption.weight(.medium)).lineLimit(1)
+        }
+        .foregroundStyle(active ? Palette.accent : Color.secondary)
+    }
+
+    // MARK: Bottom bar
+
+    @ViewBuilder
+    private var bottomBar: some View {
+        if !selected.isEmpty {
+            selectionBar
+        } else if !store.staleSessions.isEmpty {
+            staleBar
+        }
+    }
+
+    private var selectionBar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(Palette.accent)
+            Text("\(selected.count) selected · \(Format.bytes(selected.reduce(0) { $0 + $1.sizeBytes }))")
+                .font(.caption).foregroundStyle(.secondary)
+            if deletable.count < selected.count {
+                Text("· \(selected.count - deletable.count) live kept")
+                    .font(.caption).foregroundStyle(.green)
+            }
+            Spacer()
+            Button("Delete \(deletable.count)…", role: .destructive) { beginDelete(selected) }
+                .controlSize(.small)
+                .disabled(deletable.isEmpty)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 7)
+        .background(.bar)
+    }
+
+    private var staleBar: some View {
         HStack {
             Image(systemName: "clock.badge.xmark").foregroundStyle(.orange)
             Text("\(store.staleSessions.count) stale · \(Format.bytes(store.staleSessions.reduce(0) { $0 + $1.sizeBytes }))")
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
-            Button("Clean up…") { confirmBulk = true }
+            Button("Clean up…") { confirmStaleCleanup = true }
                 .controlSize(.small)
         }
         .padding(.horizontal, 12).padding(.vertical, 7)
         .background(.bar)
+    }
+}
+
+// MARK: - Batch selection
+
+/// Right-hand pane when several sessions are selected: what you're about to
+/// remove, summed up, plus the one button that removes it.
+struct BatchSelectionDetail: View {
+    let sessions: [Session]
+    let deletable: [Session]
+    var onDelete: () -> Void
+    var onClear: () -> Void
+
+    private var bytes: Int { sessions.reduce(0) { $0 + $1.sizeBytes } }
+    private var tokens: Int { sessions.reduce(0) { $0 + $1.totalTokens } }
+    private var cost: Double { sessions.reduce(0) { $0 + $1.estimatedCost } }
+    private var liveCount: Int { sessions.count - deletable.count }
+
+    private var byProject: [(name: String, count: Int)] {
+        var counts: [String: Int] = [:]
+        for s in sessions { counts[s.projectName, default: 0] += 1 }
+        return counts.map { (name: $0.key, count: $0.value) }
+            .sorted { $0.count == $1.count ? $0.name < $1.name : $0.count > $1.count }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                DetailHeader(systemImage: "checklist", tint: Palette.accent,
+                             title: "\(sessions.count) sessions selected",
+                             subtitle: liveCount > 0
+                                ? "\(deletable.count) can be deleted · \(liveCount) live"
+                                : "All \(sessions.count) can be deleted") {
+                    Button("Clear", action: onClear).controlSize(.small)
+                }
+
+                HStack(spacing: 10) {
+                    tile("Sessions", "\(sessions.count)", .pink)
+                    tile("Transcripts", Format.bytes(bytes), .orange)
+                    tile("Total tok", Format.compact(tokens), Palette.accent)
+                    tile("Est. cost", Pricing.money(cost), Color(hex: 0x6EE7B7))
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Projects", systemImage: "folder").font(.headline)
+                    FlowLayout(spacing: 6) {
+                        ForEach(byProject, id: \.name) { p in
+                            Pill(text: "\(p.name) · \(p.count)", color: Palette.textSecondary)
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Selected", systemImage: "list.bullet").font(.headline)
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(sessions.prefix(12)) { s in
+                            HStack(spacing: 8) {
+                                Image(systemName: s.state.systemImage)
+                                    .font(.caption2).foregroundStyle(s.state.color).frame(width: 14)
+                                Text(s.name ?? s.projectName).font(.caption).lineLimit(1)
+                                Spacer(minLength: 8)
+                                Text(Format.bytes(s.sizeBytes))
+                                    .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                        if sessions.count > 12 {
+                            Text("+ \(sessions.count - 12) more")
+                                .font(.caption).foregroundStyle(.tertiary).padding(.top, 4)
+                        }
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Palette.surfaceHi, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+
+                Divider()
+                HStack {
+                    Text("Deleted transcripts go to the macOS Trash — recoverable.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button(role: .destructive, action: onDelete) {
+                        Label("Delete \(deletable.count)", systemImage: "trash")
+                    }
+                    .disabled(deletable.isEmpty)
+                }
+            }
+            .padding(20)
+        }
+    }
+
+    private func tile(_ label: String, _ value: String, _ tint: Color) -> some View {
+        VStack(spacing: 3) {
+            Text(value).font(.title3.weight(.bold).monospacedDigit()).foregroundStyle(tint)
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity).padding(.vertical, 10)
+        .background(Palette.surfaceHi, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 }
 
