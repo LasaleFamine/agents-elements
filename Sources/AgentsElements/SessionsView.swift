@@ -21,6 +21,7 @@ struct SessionsView: View {
             && (projectFilter == nil || s.projectKey == projectFilter)
             && (query.isEmpty
                 || s.projectName.localizedCaseInsensitiveContains(query)
+                || s.displayTitle.localizedCaseInsensitiveContains(query)
                 || (s.name ?? "").localizedCaseInsensitiveContains(query)
                 || (s.lastPrompt ?? "").localizedCaseInsensitiveContains(query)
                 || (s.gitBranch ?? "").localizedCaseInsensitiveContains(query))
@@ -345,7 +346,7 @@ struct BatchSelectionDetail: View {
                             HStack(spacing: 8) {
                                 Image(systemName: s.state.systemImage)
                                     .font(.caption2).foregroundStyle(s.state.color).frame(width: 14)
-                                Text(s.name ?? s.projectName).font(.caption).lineLimit(1)
+                                Text(s.displayTitle).font(.caption).lineLimit(1)
                                 Spacer(minLength: 8)
                                 Text(Format.bytes(s.sizeBytes))
                                     .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
@@ -398,19 +399,29 @@ struct SessionRow: View {
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(session.name ?? session.projectName).font(.callout.weight(.medium)).lineLimit(1)
+                    Text(session.displayTitle).font(.callout.weight(.medium)).lineLimit(1)
                     ProviderBadge(provider: session.provider, compact: true)
                     if session.subagentRuns > 0 {
                         Label("\(session.subagentRuns)", systemImage: "person.2")
                             .font(.caption2).foregroundStyle(.tertiary).labelStyle(.titleAndIcon)
                     }
                 }
-                Text(session.lastPrompt ?? "—").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                // The title now carries the identity, so the project name — previously the
+                // row's headline — moves here rather than disappearing.
+                HStack(spacing: 5) {
+                    Text(session.projectName).foregroundStyle(.secondary)
+                    if let branch = session.gitBranch, !branch.isEmpty {
+                        Text("·").foregroundStyle(.quaternary)
+                        Label(branch, systemImage: "arrow.triangle.branch")
+                            .labelStyle(.titleAndIcon).foregroundStyle(.tertiary).lineLimit(1)
+                    }
+                }
+                .font(.caption)
             }
             Spacer(minLength: 4)
             VStack(alignment: .trailing, spacing: 2) {
                 Text(Format.relative(session.lastActivity)).font(.caption2).foregroundStyle(.tertiary)
-                Text("\(session.messageCount) msgs").font(.caption2).foregroundStyle(.tertiary)
+                Text("\(session.humanTurns) turns").font(.caption2).foregroundStyle(.tertiary)
             }
         }
         .padding(.vertical, 3)
@@ -438,6 +449,7 @@ struct SessionDetail: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
+                about
                 if let prompt = session.lastPrompt {
                     VStack(alignment: .leading, spacing: 6) {
                         Label("Last prompt", systemImage: "text.quote").font(.headline)
@@ -466,9 +478,30 @@ struct SessionDetail: View {
         }
     }
 
+    /// Where the title came from, and how much to trust it. A name you chose is
+    /// authoritative; one generated from an opening prompt may say very little about where
+    /// the session actually went, and saying so is more useful than quietly presenting it
+    /// as fact.
+    @ViewBuilder
+    private var about: some View {
+        if session.title != nil {
+            let vague = SessionTitle.isLowSignal(session.displayTitle)
+            HStack(spacing: 6) {
+                Image(systemName: vague ? "sparkles" : session.titleSource.systemImage)
+                    .font(.caption)
+                Text(vague ? "\(session.titleSource.label) — and vague, since the session opened mid-thread"
+                           : session.titleSource.label)
+                    .font(.caption)
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(Palette.surfaceHi, in: Capsule())
+        }
+    }
+
     private var header: some View {
         DetailHeader(systemImage: "bubble.left.and.bubble.right.fill", tint: .pink,
-                     title: session.name ?? session.projectName,
+                     title: session.displayTitle,
                      subtitle: session.cwd) {
             HStack(spacing: 10) {
                 if let fill = session.contextFill { ContextRing(percent: fill, size: 42) }
@@ -481,7 +514,7 @@ struct SessionDetail: View {
     @ViewBuilder
     private var tokenSection: some View {
         HStack(spacing: 10) {
-            tokenTile("Messages", "\(session.messageCount)", .pink)
+            tokenTile("Your turns", "\(session.humanTurns)", .pink)
             tokenTile("Subagents", "\(session.subagentRuns)", Palette.accent2)
             tokenTile("Tokens out", Format.compact(session.outputTokens), .green)
             tokenTile("Total tok", Format.compact(session.totalTokens), Palette.accent)
@@ -506,6 +539,9 @@ struct SessionDetail: View {
             if let v = session.version { InfoRow(label: "CC version", value: v, mono: true) }
             if let f = session.firstActivity { InfoRow(label: "Started", value: Format.relative(f)) }
             InfoRow(label: "Last active", value: Format.relative(session.lastActivity))
+            // Total traffic, which on a tool-heavy session is mostly the agent talking to
+            // itself — kept here rather than as a headline number.
+            InfoRow(label: "Messages", value: "\(session.messageCount)")
             InfoRow(label: "Session ID", value: session.id, mono: true)
         }
     }

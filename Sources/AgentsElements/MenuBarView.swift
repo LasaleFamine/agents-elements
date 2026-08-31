@@ -52,7 +52,7 @@ struct MenuBarView: View {
             HStack(spacing: 9) {
                 PulseDot(size: 7)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(s.name ?? s.projectName).font(.callout.weight(.medium))
+                    Text(s.displayTitle).font(.callout.weight(.medium))
                         .foregroundStyle(Palette.textPrimary).lineLimit(1)
                     Text(s.status ?? "running").microLabel().foregroundStyle(Palette.textTertiary)
                 }

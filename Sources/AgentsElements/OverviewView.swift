@@ -103,7 +103,7 @@ struct OverviewContent: View {
                         .background(.pink.opacity(0.15), in: Circle())
                 }
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(s.name ?? s.projectName).font(.subheadline.weight(.semibold)).lineLimit(1)
+                    Text(s.displayTitle).font(.subheadline.weight(.semibold)).lineLimit(1)
                     HStack(spacing: 6) {
                         StateBadge(state: .live, status: s.status)
                         if let m = s.model { Pill(text: shortModel(m), color: .blue) }
@@ -130,7 +130,7 @@ struct OverviewContent: View {
                                 Image(systemName: s.state.systemImage)
                                     .font(.caption).foregroundStyle(s.state.color).frame(width: 16)
                                 VStack(alignment: .leading, spacing: 1) {
-                                    Text(s.name ?? s.projectName).font(.callout.weight(.medium)).lineLimit(1)
+                                    Text(s.displayTitle).font(.callout.weight(.medium)).lineLimit(1)
                                     Text(s.lastPrompt ?? "—").font(.caption).foregroundStyle(.secondary).lineLimit(1)
                                 }
                                 Spacer()
