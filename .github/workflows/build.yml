@@ -25,6 +25,9 @@ jobs:
       - name: Self-test mutations (dry run, no writes)
         run: swift run -c release AgentsElements -- --selftest-mutations
 
+      - name: Self-test session filters (read-only)
+        run: swift run -c release AgentsElements -- --selftest-sessions
+
   release:
     # On a pushed v* tag, build the .app, zip it, and publish a GitHub Release.
     needs: build

@@ -41,6 +41,8 @@ swift run AgentsElements
 
 ```bash
 swift run AgentsElements -- --scan-dump            # print parsed counts, tokens, cost
+swift run AgentsElements -- --scan-detail          # one line per session — diff this before/after a scanner change
+swift run AgentsElements -- --selftest-sessions    # read-only check of the session filters
 swift run AgentsElements -- --selftest-mutations   # dry-run plugin/skill toggles (writes nothing)
 swift run AgentsElements -- --render out.png [overview|insights|relationships|markdown|hero|welcome]
 ```

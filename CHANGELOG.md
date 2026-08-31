@@ -2,6 +2,31 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+- **Configurable staleness** — pick how many days of inactivity make a session stale
+  (1–90) from the Sessions filter bar. The choice is remembered and applied live, with no
+  rescan, and the Overview health row follows it.
+- **Batch delete** — ⌘/⇧-click (or *Select all*) to select several sessions and move them
+  to the Trash in one step. The right-hand pane summarises what's selected (size, tokens,
+  estimated cost, projects) before you confirm; live sessions are always held back.
+- **Filter sessions by project** — scope the list to one project, keyed by working
+  directory so same-named checkouts stay distinct.
+- Right-click menu on the session list (Reveal in Finder / Move to Trash).
+- `--selftest-sessions`, a read-only CLI check of the session filters and batch-delete targets.
+- `--scan-detail`, a deterministic per-session dump for diffing scanner changes.
+
+### Changed
+- **Startup is ~100× faster.** Scanning the session corpus went from ~27s to ~0.2s on a
+  400MB corpus. The JSONL parsers now work on raw UTF-8 bytes (`memchr`/`memmem`) instead
+  of Swift `String` search — `range(of:)` and `contains` over hundreds of megabytes *were*
+  the entire cost — and only the handful of lines carrying data we surface are parsed as
+  JSON. Transcripts are also parsed in parallel across cores and read via memory mapping.
+- **Loading is staged.** The light inventory (skills, subagents, commands, plugins, MCP,
+  hooks, plans, tasks) is scanned and shown first, so the window has real content while the
+  transcript corpus is still being read; the Sessions view says so while it waits.
+
 ## [1.0.1] — 2026-06-14
 
 Docs and release tooling — no changes to app behavior.
