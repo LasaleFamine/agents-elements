@@ -28,7 +28,9 @@ enum DemoData {
             state: state, pid: state == .live ? 4242 : nil,
             status: state == .live ? (fill != nil ? "busy" : "idle") : nil,
             contextFill: fill, subagentRuns: msgs / 9,
-            usage: [use(model, input, output, cacheRead)], provider: provider)
+            usage: [use(model, input, output, cacheRead)], provider: provider,
+            title: name, titleSource: name == nil ? .none : .generated,
+            humanTurns: max(1, msgs / 12))
     }
 
     static let snapshot: Snapshot = {

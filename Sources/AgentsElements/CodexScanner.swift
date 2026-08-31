@@ -322,13 +322,15 @@ enum CodexScanner {
         }
 
         let live = scanLiveProcesses()
+        let catalog = CodexCatalog.load()
 
         guard FS.dirExists(Paths.codexSessions) else { return ([], trustedOnlyProjects(trust, known: [])) }
         let now = Date()
         let files = allJSONL(Paths.codexSessions)
         let collected = Collector<Session>(reserving: files.count)
         parallelFor(files.count) { i in
-            if let s = parseRollout(files[i], names: names, live: live, configModel: configModel, now: now) {
+            if let s = parseRollout(files[i], names: names, catalog: catalog, live: live,
+                                    configModel: configModel, now: now) {
                 collected.add(s)
             }
         }
@@ -375,8 +377,10 @@ enum CodexScanner {
     private static let pSessionMeta = Bytes.pattern("\"session_meta\"")
     private static let pModel = Bytes.pattern("\"model\":\"")
     private static let pTotalTokenUsage = Bytes.pattern("\"total_token_usage\"")
+    private static let pUserMessage = Bytes.pattern("\"type\":\"user_message\"")
 
-    private static func parseRollout(_ file: URL, names: [String: String], live: [String: Int],
+    private static func parseRollout(_ file: URL, names: [String: String],
+                                     catalog: [String: CodexCatalog.Entry], live: [String: Int],
                                      configModel: String, now: Date) -> Session? {
         guard let data = FS.readData(file), !data.isEmpty else { return nil }
         let mtime = FS.modified(file)
@@ -390,6 +394,12 @@ enum CodexScanner {
         var model = configModel
         var msgCount = 0
         var usage = ModelUsage(model: configModel)
+        var branch: String?
+        var firstTs: Date?
+        var threadSource: String?
+        var humanTurns = 0
+        var firstUserMessage: String?
+        var lastUserMessage: String?
 
         data.withUnsafeBytes { raw in
             let buf = Bytes.Buf(raw)
@@ -401,6 +411,20 @@ enum CodexScanner {
                     cwd = payload["cwd"] as? String ?? ""
                     version = payload["cli_version"] as? String
                     if let id = payload["id"] as? String { sid = id }
+                    // All already on disk, all previously discarded.
+                    branch = (payload["git"] as? [String: Any])?["branch"] as? String
+                    firstTs = Timestamps.parse(payload["timestamp"] as? String)
+                    threadSource = payload["thread_source"] as? String
+                }
+
+                // Codex's user turns are clean text with none of the wrapper noise the
+                // Claude channel carries, so they make a good title of last resort.
+                if Bytes.contains(line, pUserMessage), let obj = Bytes.json(line),
+                   let payload = obj["payload"] as? [String: Any],
+                   let msg = payload["message"] as? String, !msg.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    humanTurns += 1
+                    if firstUserMessage == nil { firstUserMessage = msg }
+                    lastUserMessage = msg
                 }
                 if let m = Bytes.quoted(line, after: pModel), m.hasPrefix("gpt") { model = m }
                 if Bytes.contains(line, pTotalTokenUsage), let obj = Bytes.json(line),
@@ -416,6 +440,18 @@ enum CodexScanner {
         usage = ModelUsage(model: model, input: usage.input, output: usage.output,
                            cacheRead: usage.cacheRead, cacheCreate: 0)
 
+        // Roughly half the rollouts on disk are Codex talking to itself — `subagent` threads
+        // and `guardian_review` approval checks. They are not sessions you started, and
+        // counting them inflates every total in the app. Rollouts predating the field have
+        // no thread_source at all, so absence has to pass.
+        if let src = threadSource, src != "user" { return nil }
+
+        let entry = catalog[sid]
+        let resolved = SessionTitle.resolve(SessionTitle.Candidates(
+            generated: entry?.title ?? names[sid],
+            firstPrompt: firstUserMessage
+        ))
+
         // Live if a running process claims this session id; else recency-based.
         var state: SessionState = now.timeIntervalSince(mtime) > staleThreshold ? .stale : .resumable
         var pid: Int?
@@ -424,11 +460,13 @@ enum CodexScanner {
 
         return Session(
             id: sid, name: names[sid], cwd: cwd, projectDir: cwd, projectName: projectName,
-            gitBranch: nil, version: version, model: model, messageCount: msgCount,
-            firstActivity: nil, lastActivity: mtime, lastPrompt: names[sid], sizeBytes: size,
+            gitBranch: branch ?? entry?.branch, version: version, model: model, messageCount: msgCount,
+            firstActivity: firstTs, lastActivity: mtime,
+            lastPrompt: lastUserMessage.map { String($0.prefix(300)) }, sizeBytes: size,
             path: file.path, state: state, pid: pid, status: pid != nil ? "running" : nil,
             contextFill: nil, subagentRuns: 0,
-            usage: usage.total > 0 ? [usage] : [], provider: .codex
+            usage: usage.total > 0 ? [usage] : [], provider: .codex,
+            title: resolved.title, titleSource: resolved.source, humanTurns: humanTurns
         )
     }
 

@@ -360,11 +360,14 @@ enum ScannerEngine {
                 .map { "\($0.model):\($0.input)/\($0.output)/\($0.cacheRead)/\($0.cacheCreate)" }
                 .joined(separator: ",")
             let prompt = (sess.lastPrompt ?? "-").replacingOccurrences(of: "\n", with: " ")
+            let title = (sess.title ?? "-").replacingOccurrences(of: "\n", with: " ")
             print([sess.id, sess.provider.rawValue, sess.cwd, sess.projectName,
-                   "msgs=\(sess.messageCount)", "model=\(sess.model ?? "-")",
+                   "msgs=\(sess.messageCount)", "turns=\(sess.humanTurns)",
+                   "model=\(sess.model ?? "-")",
                    "branch=\(sess.gitBranch ?? "-")", "ver=\(sess.version ?? "-")",
                    "sub=\(sess.subagentRuns)", "usage=[\(usage)]",
                    "first=\(sess.firstActivity?.timeIntervalSince1970 ?? -1)",
+                   "src=\(sess.titleSource.rawValue)", "title=\(title.prefix(80))",
                    "prompt=\(prompt.prefix(120))"].joined(separator: " | "))
         }
         print("TOTAL \(s.sessions.count) sessions, \(s.projects.count) projects")
@@ -404,7 +407,7 @@ enum ScannerEngine {
         print("Disabled skills: \(disabledSkills.count)\(disabledSkills.isEmpty ? "" : " — " + disabledSkills.map(\.name).joined(separator: ", "))")
         print("──────────────────────────")
         for sess in s.sessions.filter({ $0.state == .live }) {
-            print("  LIVE  \(sess.id.prefix(8))  \(sess.name ?? sess.projectName)  pid=\(sess.pid ?? -1)  \(sess.status ?? "")")
+            print("  LIVE  \(sess.id.prefix(8))  \(sess.displayTitle)  pid=\(sess.pid ?? -1)  \(sess.status ?? "")")
         }
         exit(0)
     }

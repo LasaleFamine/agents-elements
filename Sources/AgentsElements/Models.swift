@@ -173,6 +173,21 @@ enum SessionState: String, Sendable, Hashable {
     case live, resumable, stale
 }
 
+/// Where a session's title came from. Both CLIs generate titles of their own and write them
+/// to disk; we prefer those over anything we derive, and the source is worth keeping because
+/// a user-set name is authoritative while a generated one is only ever a good guess.
+enum TitleSource: String, Sendable, Hashable {
+    case custom      // user-named: /rename, `claude -n`, plan-accept
+    case agentName   // Claude's prompt-bar agent name
+    case generated   // Claude `ai-title` / Codex `display_title`
+    case firstPrompt // derived from the opening human message
+    case lastPrompt  // derived from the most recent human message
+    case none        // nothing usable — the UI falls back to the project name
+
+    /// Titles we derived ourselves, or none at all: the ones worth offering to regenerate.
+    var isDerived: Bool { self == .firstPrompt || self == .lastPrompt || self == .none }
+}
+
 struct Session: Identifiable, Hashable, Sendable {
     let id: String            // session uuid
     let name: String?
@@ -195,10 +210,21 @@ struct Session: Identifiable, Hashable, Sendable {
     let subagentRuns: Int     // nested subagent sidechain transcripts this session spawned
     let usage: [ModelUsage]   // token usage per model, aggregated from the transcript
     var provider: Provider = .claude
+    let title: String?        // what the session is about, best source available
+    var titleSource: TitleSource = .none
+    let humanTurns: Int       // prompts you actually typed, excluding tool-result envelopes
 
     /// Stable identity of the project this session belongs to. `cwd` is what the user
     /// thinks of as "the project"; the encoded dir is the fallback when it's unknown.
     var projectKey: String { cwd.isEmpty ? projectDir : cwd }
+
+    /// The one place the title fallback chain lives, so every surface agrees on what a
+    /// session is called. `name` is only ever set for live sessions.
+    var displayTitle: String {
+        if let t = title, !t.isEmpty { return t }
+        if let n = name, !n.isEmpty { return n }
+        return projectName
+    }
 
     var inputTokens: Int { usage.reduce(0) { $0 + $1.input } }
     var outputTokens: Int { usage.reduce(0) { $0 + $1.output } }

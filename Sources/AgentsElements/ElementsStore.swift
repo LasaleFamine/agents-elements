@@ -318,6 +318,24 @@ extension ElementsStore {
         let deletable = all.filter { $0.state != .live }
         print("Select-all batch delete would target \(deletable.count) of \(all.count) " +
               "(\(all.count - deletable.count) live held back)\(deletable.contains { $0.state == .live } ? " ✗" : " ✓")")
+
+        // Where titles come from. Both CLIs write one of their own for most sessions; a
+        // large `.none` share would mean the sidecar records stopped being read.
+        print("Title source:")
+        let order: [TitleSource] = [.custom, .agentName, .generated, .firstPrompt, .lastPrompt, .none]
+        for src in order {
+            let n = all.filter { $0.titleSource == src }.count
+            guard n > 0 else { continue }
+            print("  " + src.rawValue.padding(toLength: 12, withPad: " ", startingAt: 0)
+                  + String(format: "%3d", n))
+        }
+        let untitled = all.filter { $0.title == nil }
+        let vague = all.filter { $0.title != nil && SessionTitle.isLowSignal($0.displayTitle) }
+        print("Untitled (falls back to project name): \(untitled.count)")
+        print("Low-signal titles: \(vague.count)  — candidates for regeneration")
+        // Every session must still render something.
+        let blank = all.filter { $0.displayTitle.isEmpty }
+        print("Sessions with no display title at all: \(blank.count)\(blank.isEmpty ? " ✓" : " ✗")")
         print("──────────────────────────")
         exit(0)
     }

@@ -84,6 +84,17 @@ enum FS {
     }
 }
 
+/// Timestamps in both transcript formats are ISO 8601, but only sometimes with fractional
+/// seconds, so both spellings have to be tried.
+enum Timestamps {
+    static func parse(_ s: String?) -> Date? {
+        guard let s else { return nil }
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.date(from: s) ?? ISO8601DateFormatter().date(from: s)
+    }
+}
+
 /// Minimal YAML-frontmatter splitter (no external YAML dependency).
 /// Handles the `---` fenced block at the top of skill/agent/command markdown.
 struct Frontmatter {

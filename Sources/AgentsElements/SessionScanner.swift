@@ -97,6 +97,19 @@ enum SessionScanner {
     private static let pModel = Bytes.pattern("\"model\":\"")
     private static let pOutputTokens = Bytes.pattern("\"output_tokens\"")
     private static let pUsage = Bytes.pattern("\"usage\":")
+    private static let pToolResult = Bytes.pattern("\"tool_result\"")
+
+    // Sidecar title records. Claude Code re-appends these on almost every turn and treats
+    // them as last-wins, so a mid-session /rename correctly overrides an earlier value.
+    private static let pAiTitle = Bytes.pattern("\"aiTitle\":\"")
+    private static let pCustomTitle = Bytes.pattern("\"customTitle\":\"")
+    private static let pAgentName = Bytes.pattern("\"agentName\":\"")
+    private static let pLastPromptKey = Bytes.pattern("\"lastPrompt\":\"")
+
+    /// Sidecar records are tiny — the longest observed across a 180MB corpus is 348 bytes.
+    /// Checking length before reaching for them keeps the extra needles off the multi-megabyte
+    /// message lines that dominate a scan, so they cost effectively nothing.
+    private static let sidecarMaxBytes = 512
 
     private static func parseSession(_ file: URL, projDir: URL,
                                      live: [String: LiveInfo], fill: [String: Int], now: Date) -> Session? {
@@ -113,6 +126,8 @@ enum SessionScanner {
         var model: String?
         var usageByModel: [String: ModelUsage] = [:]
         var lastPrompt: String?
+        var humanTurns = 0
+        var cand = SessionTitle.Candidates()
 
         data.withUnsafeBytes { raw in
             let buf = Bytes.Buf(raw)
@@ -121,13 +136,29 @@ enum SessionScanner {
 
             for r in ranges {
                 let line = Bytes.slice(buf, r)
-                if Bytes.contains(line, pUser) || Bytes.contains(line, pAssistant) { msgCount += 1 }
+                let isUser = Bytes.contains(line, pUser)
+                if isUser || Bytes.contains(line, pAssistant) { msgCount += 1 }
+
+                // The `user` channel carries tool results as well as typed prompts, and on a
+                // tool-heavy session the latter are a rounding error — 9 of 498 in one
+                // transcript here. Counting them apart is what makes the number mean anything.
+                if isUser, !Bytes.contains(line, pToolResult) { humanTurns += 1 }
+
+                if r.count <= sidecarMaxBytes {
+                    if let t = Bytes.quoted(line, after: pCustomTitle) { cand.customTitle = t }
+                    if let t = Bytes.quoted(line, after: pAgentName) { cand.agentName = t }
+                    if let t = Bytes.quoted(line, after: pLastPromptKey) { cand.lastPrompt = t }
+                    // One distinct value per session in practice, so first hit is enough.
+                    if cand.generated == nil, let t = Bytes.quoted(line, after: pAiTitle) {
+                        cand.generated = t
+                    }
+                }
 
                 if !metaFound, Bytes.contains(line, pCwd), let d = decodeRaw(line) {
                     cwd = d.cwd ?? ""
                     branch = d.gitBranch
                     version = d.version
-                    firstTs = parseDate(d.timestamp)
+                    firstTs = Timestamps.parse(d.timestamp)
                     metaFound = true
                 }
 
@@ -147,21 +178,22 @@ enum SessionScanner {
                 }
             }
 
-            var scanned = 0
-            for r in ranges.reversed() {
-                let line = Bytes.slice(buf, r)
-                guard Bytes.contains(line, pUser) else { continue }
-                scanned += 1
-                if let d = decodeRaw(line), let txt = d.message?.content?.displayText {
-                    let clean = txt.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !clean.isEmpty && !clean.hasPrefix("<") {
-                        lastPrompt = String(clean.prefix(300))
-                        break
-                    }
-                }
-                if scanned > 40 { break }
+            // The CLI writes `last-prompt` itself and it is present in every current
+            // transcript, so this walk is only for older ones. Skipping tool-result
+            // envelopes before decoding is what makes the budget meaningful: it used to be
+            // spent entirely on them, which is why some sessions showed no prompt at all.
+            if cand.lastPrompt == nil {
+                cand.lastPrompt = firstHumanText(in: ranges.reversed(), buf)
+            }
+
+            // Only needed when the CLI generated no title of its own (pre-2.1.235).
+            if cand.customTitle == nil, cand.agentName == nil, cand.generated == nil {
+                cand.firstPrompt = firstHumanText(in: ranges, buf)
             }
         }
+
+        lastPrompt = cand.lastPrompt.map { String($0.prefix(300)) }
+        let resolved = SessionTitle.resolve(cand)
 
         if cwd.isEmpty { cwd = decodeDir(projDir.lastPathComponent) }
 
@@ -184,8 +216,30 @@ enum SessionScanner {
             firstActivity: firstTs, lastActivity: mtime, lastPrompt: lastPrompt, sizeBytes: size,
             path: file.path, state: state, pid: live[sid]?.pid, status: live[sid]?.status,
             contextFill: fill[sid], subagentRuns: subagentRuns,
-            usage: usageByModel.values.sorted { $0.total > $1.total }
+            usage: usageByModel.values.sorted { $0.total > $1.total },
+            title: resolved.title, titleSource: resolved.source, humanTurns: humanTurns
         )
+    }
+
+    /// First line in `order` that holds something the user actually typed, decoding only
+    /// plausible candidates: tool-result envelopes share the `user` type but are filtered on
+    /// a byte needle, and CLI wrappers are rejected after decoding. Bounded, because a
+    /// session that opens with a long run of machine traffic shouldn't cost a full parse.
+    private static func firstHumanText<S: Sequence<Range<Int>>>(in order: S, _ buf: Bytes.Buf) -> String? {
+        var scanned = 0
+        for r in order {
+            let line = Bytes.slice(buf, r)
+            guard Bytes.contains(line, pUser), !Bytes.contains(line, pToolResult) else { continue }
+            scanned += 1
+            // isMeta marks CLI-injected content (slash-command expansions and the like),
+            // which reads like a prompt but isn't one the user wrote.
+            if let d = decodeRaw(line), d.isMeta != true,
+               let txt = d.message?.content?.displayText, !SessionTitle.isNoise(txt) {
+                return txt.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if scanned > 40 { break }
+        }
+        return nil
     }
 
     /// The `usage` object on an assistant line. Fast path lifts just that sub-object out
@@ -209,6 +263,7 @@ enum SessionScanner {
         let gitBranch: String?
         let version: String?
         let timestamp: String?
+        let isMeta: Bool?
         let message: RawMsg?
     }
     private struct RawMsg: Decodable {
@@ -219,13 +274,6 @@ enum SessionScanner {
 
     private static func decodeRaw(_ line: Bytes.Buf) -> Raw? {
         try? JSONDecoder().decode(Raw.self, from: Data(line))
-    }
-
-    private static func parseDate(_ s: String?) -> Date? {
-        guard let s else { return nil }
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f.date(from: s) ?? ISO8601DateFormatter().date(from: s)
     }
 
     /// Best-effort reverse of the project dir encoding (lossy: `/` and `-` both map to `-`).
