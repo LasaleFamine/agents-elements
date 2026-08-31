@@ -196,6 +196,10 @@ struct Session: Identifiable, Hashable, Sendable {
     let usage: [ModelUsage]   // token usage per model, aggregated from the transcript
     var provider: Provider = .claude
 
+    /// Stable identity of the project this session belongs to. `cwd` is what the user
+    /// thinks of as "the project"; the encoded dir is the fallback when it's unknown.
+    var projectKey: String { cwd.isEmpty ? projectDir : cwd }
+
     var inputTokens: Int { usage.reduce(0) { $0 + $1.input } }
     var outputTokens: Int { usage.reduce(0) { $0 + $1.output } }
     var cacheReadTokens: Int { usage.reduce(0) { $0 + $1.cacheRead } }

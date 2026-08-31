@@ -54,15 +54,26 @@ enum SessionScanner {
 
         guard FS.dirExists(Paths.projects) else { return ([], []) }
         let now = Date()
-        var sessions: [Session] = []
-        for projDir in FS.contents(Paths.projects) where FS.dirExists(projDir) {
-            for file in FS.contents(projDir) where file.pathExtension == "jsonl" {
-                if let s = parseSession(file, projDir: projDir, live: live, fill: fill, now: now) {
-                    sessions.append(s)
-                }
+
+        // (transcript, its project dir) — collected first so the parse can fan out.
+        let files: [(file: URL, projDir: URL)] = FS.contents(Paths.projects)
+            .filter { FS.dirExists($0) }
+            .flatMap { projDir in
+                FS.contents(projDir)
+                    .filter { $0.pathExtension == "jsonl" }
+                    .map { (file: $0, projDir: projDir) }
+            }
+
+        let collected = Collector<Session>(reserving: files.count)
+        parallelFor(files.count) { i in
+            let (file, projDir) = files[i]
+            if let s = parseSession(file, projDir: projDir, live: live, fill: fill, now: now) {
+                collected.add(s)
             }
         }
-        sessions.sort { $0.lastActivity > $1.lastActivity }
+        // Tie-break on id so a parallel scan still produces a stable order.
+        var sessions = collected.all
+        sessions.sort { $0.lastActivity == $1.lastActivity ? $0.id < $1.id : $0.lastActivity > $1.lastActivity }
 
         var byProject: [String: [Session]] = [:]
         for s in sessions { byProject[s.projectDir, default: []].append(s) }
@@ -79,13 +90,20 @@ enum SessionScanner {
         return (sessions, projects)
     }
 
+    // Needles, held as bytes so the hot loop never builds a String.
+    private static let pUser = Bytes.pattern("\"type\":\"user\"")
+    private static let pAssistant = Bytes.pattern("\"type\":\"assistant\"")
+    private static let pCwd = Bytes.pattern("\"cwd\"")
+    private static let pModel = Bytes.pattern("\"model\":\"")
+    private static let pOutputTokens = Bytes.pattern("\"output_tokens\"")
+    private static let pUsage = Bytes.pattern("\"usage\":")
+
     private static func parseSession(_ file: URL, projDir: URL,
                                      live: [String: LiveInfo], fill: [String: Int], now: Date) -> Session? {
         let sid = file.deletingPathExtension().lastPathComponent
         let size = FS.size(file)
         let mtime = FS.modified(file)
-        guard let content = FS.readString(file), !content.isEmpty else { return nil }
-        let lines = content.split(separator: "\n", omittingEmptySubsequences: true)
+        guard let data = FS.readData(file), !data.isEmpty else { return nil }
 
         var msgCount = 0
         var cwd = ""
@@ -93,49 +111,56 @@ enum SessionScanner {
         var version: String?
         var firstTs: Date?
         var model: String?
-        var metaFound = false
         var usageByModel: [String: ModelUsage] = [:]
-
-        for line in lines {
-            if line.contains("\"type\":\"user\"") || line.contains("\"type\":\"assistant\"") { msgCount += 1 }
-            if !metaFound, line.contains("\"cwd\""), let d = decodeRaw(line) {
-                cwd = d.cwd ?? ""
-                branch = d.gitBranch
-                version = d.version
-                firstTs = parseDate(d.timestamp)
-                metaFound = true
-            }
-            if model == nil, let r = line.range(of: "\"model\":\"") {
-                let after = line[r.upperBound...]
-                if let end = after.firstIndex(of: "\"") {
-                    let m = String(after[..<end])
-                    if m != "<synthetic>" && !m.isEmpty { model = m }
-                }
-            }
-            if line.contains("\"output_tokens\""), let raw = decodeUsage(line), let u = raw.message?.usage {
-                let key = raw.message?.model ?? model ?? "unknown"
-                var bucket = usageByModel[key] ?? ModelUsage(model: key)
-                bucket.input += u.input_tokens ?? 0
-                bucket.output += u.output_tokens ?? 0
-                bucket.cacheRead += u.cache_read_input_tokens ?? 0
-                bucket.cacheCreate += u.cache_creation_input_tokens ?? 0
-                usageByModel[key] = bucket
-            }
-        }
-
         var lastPrompt: String?
-        var scanned = 0
-        for line in lines.reversed() {
-            guard line.contains("\"type\":\"user\"") else { continue }
-            scanned += 1
-            if let d = decodeRaw(line), let txt = d.message?.content?.displayText {
-                let clean = txt.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !clean.isEmpty && !clean.hasPrefix("<") {
-                    lastPrompt = String(clean.prefix(300))
-                    break
+
+        data.withUnsafeBytes { raw in
+            let buf = Bytes.Buf(raw)
+            let ranges = Bytes.lineRanges(buf)
+            var metaFound = false
+
+            for r in ranges {
+                let line = Bytes.slice(buf, r)
+                if Bytes.contains(line, pUser) || Bytes.contains(line, pAssistant) { msgCount += 1 }
+
+                if !metaFound, Bytes.contains(line, pCwd), let d = decodeRaw(line) {
+                    cwd = d.cwd ?? ""
+                    branch = d.gitBranch
+                    version = d.version
+                    firstTs = parseDate(d.timestamp)
+                    metaFound = true
+                }
+
+                if model == nil, let m = Bytes.quoted(line, after: pModel),
+                   m != "<synthetic>", !m.isEmpty {
+                    model = m
+                }
+
+                if Bytes.contains(line, pOutputTokens), let u = usage(in: line) {
+                    let key = Bytes.quoted(line, after: pModel) ?? model ?? "unknown"
+                    var bucket = usageByModel[key] ?? ModelUsage(model: key)
+                    bucket.input += u["input_tokens"] as? Int ?? 0
+                    bucket.output += u["output_tokens"] as? Int ?? 0
+                    bucket.cacheRead += u["cache_read_input_tokens"] as? Int ?? 0
+                    bucket.cacheCreate += u["cache_creation_input_tokens"] as? Int ?? 0
+                    usageByModel[key] = bucket
                 }
             }
-            if scanned > 40 { break }
+
+            var scanned = 0
+            for r in ranges.reversed() {
+                let line = Bytes.slice(buf, r)
+                guard Bytes.contains(line, pUser) else { continue }
+                scanned += 1
+                if let d = decodeRaw(line), let txt = d.message?.content?.displayText {
+                    let clean = txt.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !clean.isEmpty && !clean.hasPrefix("<") {
+                        lastPrompt = String(clean.prefix(300))
+                        break
+                    }
+                }
+                if scanned > 40 { break }
+            }
         }
 
         if cwd.isEmpty { cwd = decodeDir(projDir.lastPathComponent) }
@@ -163,26 +188,20 @@ enum SessionScanner {
         )
     }
 
+    /// The `usage` object on an assistant line. Fast path lifts just that sub-object out
+    /// of what can be a multi-megabyte line; if the first `"usage":` turns out to be
+    /// something else (it can appear in message content), fall back to parsing the line.
+    private static func usage(in line: Bytes.Buf) -> [String: Any]? {
+        if let slice = Bytes.object(line, after: pUsage), let obj = Bytes.json(slice),
+           obj["output_tokens"] != nil || obj["input_tokens"] != nil {
+            return obj
+        }
+        guard let obj = Bytes.json(line),
+              let msg = obj["message"] as? [String: Any] else { return nil }
+        return msg["usage"] as? [String: Any]
+    }
+
     // MARK: - Line decoding helpers
-
-    private struct UsageRaw: Decodable {
-        struct Msg: Decodable {
-            let model: String?
-            let usage: Usage?
-        }
-        struct Usage: Decodable {
-            let input_tokens: Int?
-            let output_tokens: Int?
-            let cache_read_input_tokens: Int?
-            let cache_creation_input_tokens: Int?
-        }
-        let message: Msg?
-    }
-
-    private static func decodeUsage(_ line: Substring) -> UsageRaw? {
-        guard let data = String(line).data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(UsageRaw.self, from: data)
-    }
 
     private struct Raw: Decodable {
         let type: String?
@@ -198,9 +217,8 @@ enum SessionScanner {
         let content: RawContent?
     }
 
-    private static func decodeRaw(_ line: Substring) -> Raw? {
-        guard let data = String(line).data(using: .utf8) else { return nil }
-        return try? JSONDecoder().decode(Raw.self, from: data)
+    private static func decodeRaw(_ line: Bytes.Buf) -> Raw? {
+        try? JSONDecoder().decode(Raw.self, from: Data(line))
     }
 
     private static func parseDate(_ s: String?) -> Date? {

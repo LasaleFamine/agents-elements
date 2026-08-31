@@ -100,19 +100,31 @@ enum TOML {
 enum CodexScanner {
     private static let staleThreshold: TimeInterval = 14 * 86_400
 
-    static func scan() -> Snapshot {
+    /// Config-driven inventory only — no transcript parsing, so this stays in the
+    /// milliseconds and can be shown before the corpus has been read.
+    static func scanConfig() -> Snapshot {
         var snap = Snapshot()
         guard FS.dirExists(Paths.codex) else { return snap }
 
         let config = (FS.readString(Paths.codexConfig)).map { TOML.parse($0) } ?? [:]
-        let configModel = config["model"] as? String ?? "gpt-5.5"
-
         snap.skills = scanSkills()
         snap.mcp = scanMCP(config)
         snap.plugins = scanPlugins(config)
         snap.codexRules = scanRules()
+        return snap
+    }
 
-        let (sessions, projects) = scanSessions(model: configModel, config: config)
+    /// The expensive half: the `sessions/**/rollout-*.jsonl` corpus.
+    static func scanTranscripts() -> (sessions: [Session], projects: [ProjectInfo]) {
+        guard FS.dirExists(Paths.codex) else { return ([], []) }
+        let config = (FS.readString(Paths.codexConfig)).map { TOML.parse($0) } ?? [:]
+        let configModel = config["model"] as? String ?? "gpt-5.5"
+        return scanSessions(model: configModel, config: config)
+    }
+
+    static func scan() -> Snapshot {
+        var snap = scanConfig()
+        let (sessions, projects) = scanTranscripts()
         snap.sessions = sessions
         snap.projects = projects
         return snap
@@ -289,15 +301,17 @@ enum CodexScanner {
     static func scanSessions(model configModel: String,
                              config: [String: Any]) -> (sessions: [Session], projects: [ProjectInfo]) {
         // session_index.jsonl → friendly thread names
-        var names: [String: String] = [:]
-        if let idx = FS.readString(Paths.codexSessionIndex) {
+        let names: [String: String] = {
+            var out: [String: String] = [:]
+            guard let idx = FS.readString(Paths.codexSessionIndex) else { return out }
             for line in idx.split(separator: "\n", omittingEmptySubsequences: true) {
                 guard let data = String(line).data(using: .utf8),
                       let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       let id = obj["id"] as? String else { continue }
-                names[id] = obj["thread_name"] as? String
+                out[id] = obj["thread_name"] as? String
             }
-        }
+            return out
+        }()
 
         // config.toml [projects."path"] trust_level
         var trust: [String: String] = [:]
@@ -311,13 +325,16 @@ enum CodexScanner {
 
         guard FS.dirExists(Paths.codexSessions) else { return ([], trustedOnlyProjects(trust, known: [])) }
         let now = Date()
-        var sessions: [Session] = []
-        for file in allJSONL(Paths.codexSessions) {
-            if let s = parseRollout(file, names: names, live: live, configModel: configModel, now: now) {
-                sessions.append(s)
+        let files = allJSONL(Paths.codexSessions)
+        let collected = Collector<Session>(reserving: files.count)
+        parallelFor(files.count) { i in
+            if let s = parseRollout(files[i], names: names, live: live, configModel: configModel, now: now) {
+                collected.add(s)
             }
         }
-        sessions.sort { $0.lastActivity > $1.lastActivity }
+        // Tie-break on id so a parallel scan still produces a stable order.
+        var sessions = collected.all
+        sessions.sort { $0.lastActivity == $1.lastActivity ? $0.id < $1.id : $0.lastActivity > $1.lastActivity }
 
         var byProject: [String: [Session]] = [:]
         for s in sessions { byProject[s.cwd, default: []].append(s) }
@@ -352,10 +369,16 @@ enum CodexScanner {
         return out
     }
 
+    // Needles, held as bytes so the hot loop never builds a String.
+    private static let pRoleUser = Bytes.pattern("\"role\":\"user\"")
+    private static let pRoleAssistant = Bytes.pattern("\"role\":\"assistant\"")
+    private static let pSessionMeta = Bytes.pattern("\"session_meta\"")
+    private static let pModel = Bytes.pattern("\"model\":\"")
+    private static let pTotalTokenUsage = Bytes.pattern("\"total_token_usage\"")
+
     private static func parseRollout(_ file: URL, names: [String: String], live: [String: Int],
                                      configModel: String, now: Date) -> Session? {
-        guard let content = FS.readString(file), !content.isEmpty else { return nil }
-        let lines = content.split(separator: "\n", omittingEmptySubsequences: true)
+        guard let data = FS.readData(file), !data.isEmpty else { return nil }
         let mtime = FS.modified(file)
         let size = FS.size(file)
 
@@ -368,23 +391,20 @@ enum CodexScanner {
         var msgCount = 0
         var usage = ModelUsage(model: configModel)
 
-        for line in lines {
-            if line.contains("\"role\":\"user\"") || line.contains("\"role\":\"assistant\"") { msgCount += 1 }
-            if cwd.isEmpty, line.contains("\"session_meta\""),
-               let obj = decodeJSON(line), let payload = obj["payload"] as? [String: Any] {
-                cwd = payload["cwd"] as? String ?? ""
-                version = payload["cli_version"] as? String
-                if let id = payload["id"] as? String { sid = id }
-            }
-            if let r = line.range(of: "\"model\":\"") {
-                let after = line[r.upperBound...]
-                if let end = after.firstIndex(of: "\"") {
-                    let m = String(after[..<end])
-                    if m.hasPrefix("gpt") { model = m }
+        data.withUnsafeBytes { raw in
+            let buf = Bytes.Buf(raw)
+            for r in Bytes.lineRanges(buf) {
+                let line = Bytes.slice(buf, r)
+                if Bytes.contains(line, pRoleUser) || Bytes.contains(line, pRoleAssistant) { msgCount += 1 }
+                if cwd.isEmpty, Bytes.contains(line, pSessionMeta),
+                   let obj = Bytes.json(line), let payload = obj["payload"] as? [String: Any] {
+                    cwd = payload["cwd"] as? String ?? ""
+                    version = payload["cli_version"] as? String
+                    if let id = payload["id"] as? String { sid = id }
                 }
-            }
-            if line.contains("\"total_token_usage\""), let obj = decodeJSON(line) {
-                if let u = findTokenUsage(obj) {
+                if let m = Bytes.quoted(line, after: pModel), m.hasPrefix("gpt") { model = m }
+                if Bytes.contains(line, pTotalTokenUsage), let obj = Bytes.json(line),
+                   let u = findTokenUsage(obj) {
                     let cached = u["cached_input_tokens"] as? Int ?? 0
                     let inTok = u["input_tokens"] as? Int ?? 0
                     usage.input = max(0, inTok - cached)
@@ -424,8 +444,4 @@ enum CodexScanner {
         return nil
     }
 
-    private static func decodeJSON(_ line: Substring) -> [String: Any]? {
-        guard let data = String(line).data(using: .utf8) else { return nil }
-        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-    }
 }

@@ -7,11 +7,17 @@ struct AgentsElementsApp: App {
     init() {
         // CLI verification paths.
         let args = CommandLine.arguments
+        if args.contains("--scan-detail") {
+            ScannerEngine.dumpDetailAndExit()
+        }
         if args.contains("--scan-dump") {
             ScannerEngine.dumpAndExit()
         }
         if args.contains("--selftest-mutations") {
             Mutator.runSelftestAndExit()
+        }
+        if args.contains("--selftest-sessions") {
+            MainActor.assumeIsolated { ElementsStore.runSessionSelftestAndExit() }
         }
         if let i = args.firstIndex(of: "--render-icon"), i + 1 < args.count {
             MainActor.assumeIsolated { IconRenderer.renderAndExit(to: args[i + 1]) }

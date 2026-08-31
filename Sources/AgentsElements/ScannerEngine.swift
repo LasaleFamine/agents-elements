@@ -4,7 +4,19 @@ import Foundation
 /// whole snapshot can be produced on a detached task and handed to the @MainActor store.
 enum ScannerEngine {
 
+    /// Full scan — light inventory plus the transcript corpus. Used by the CLI paths;
+    /// the app stages the two halves instead (see `scanLight` / `scanTranscripts`).
     static func scanEverything() -> Snapshot {
+        var snap = scanLight()
+        let (sessions, projects) = scanTranscripts()
+        snap.sessions = sessions
+        snap.projects = projects
+        return snap
+    }
+
+    /// Everything that comes from config and small Markdown files: skills, subagents,
+    /// commands, plugins, MCP, hooks, plans, tasks, sweeps. Milliseconds — no JSONL.
+    static func scanLight() -> Snapshot {
         var snap = Snapshot()
 
         let (plugins, marketplaces) = scanPlugins()
@@ -35,23 +47,26 @@ enum ScannerEngine {
         snap.tasks = scanTasks()
         snap.sweeps = scanSweeps()
 
-        let (sessions, projects) = SessionScanner.scan()
-        snap.sessions = sessions
-        snap.projects = projects
-
         // Merge in Codex (~/.codex)
-        let codex = CodexScanner.scan()
+        let codex = CodexScanner.scanConfig()
         snap.skills += codex.skills
         snap.plugins += codex.plugins
         snap.mcp += codex.mcp
-        snap.sessions += codex.sessions
-        snap.projects += codex.projects
         snap.codexRules = codex.codexRules
         snap.skills.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        snap.sessions.sort { $0.lastActivity > $1.lastActivity }
-        snap.projects.sort { $0.lastActivity > $1.lastActivity }
 
         return snap
+    }
+
+    /// The expensive half: every session transcript across both agents.
+    static func scanTranscripts() -> (sessions: [Session], projects: [ProjectInfo]) {
+        var (sessions, projects) = SessionScanner.scan()
+        let codex = CodexScanner.scanTranscripts()
+        sessions += codex.sessions
+        projects += codex.projects
+        sessions.sort { $0.lastActivity > $1.lastActivity }
+        projects.sort { $0.lastActivity > $1.lastActivity }
+        return (sessions, projects)
     }
 
     // MARK: - Skills
@@ -335,6 +350,26 @@ enum ScannerEngine {
     }
 
     // MARK: - Diagnostics (CLI verification path)
+
+    /// Per-session dump used to A/B the scanners against each other. Deterministic:
+    /// no timestamps, sorted by id.
+    static func dumpDetailAndExit() -> Never {
+        let s = scanEverything()
+        for sess in s.sessions.sorted(by: { $0.id < $1.id }) {
+            let usage = sess.usage.sorted { $0.model < $1.model }
+                .map { "\($0.model):\($0.input)/\($0.output)/\($0.cacheRead)/\($0.cacheCreate)" }
+                .joined(separator: ",")
+            let prompt = (sess.lastPrompt ?? "-").replacingOccurrences(of: "\n", with: " ")
+            print([sess.id, sess.provider.rawValue, sess.cwd, sess.projectName,
+                   "msgs=\(sess.messageCount)", "model=\(sess.model ?? "-")",
+                   "branch=\(sess.gitBranch ?? "-")", "ver=\(sess.version ?? "-")",
+                   "sub=\(sess.subagentRuns)", "usage=[\(usage)]",
+                   "first=\(sess.firstActivity?.timeIntervalSince1970 ?? -1)",
+                   "prompt=\(prompt.prefix(120))"].joined(separator: " | "))
+        }
+        print("TOTAL \(s.sessions.count) sessions, \(s.projects.count) projects")
+        exit(0)
+    }
 
     static func dumpAndExit() -> Never {
         let s = scanEverything()

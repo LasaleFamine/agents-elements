@@ -8,10 +8,48 @@ import Observation
 final class ElementsStore {
     private(set) var snapshot = Snapshot()
     private(set) var isLoading = false
+    /// True while the transcript corpus is still being read. The light inventory is
+    /// already on screen by then, so views that need sessions can say so specifically.
+    private(set) var isScanningSessions = false
     private(set) var lastRefresh: Date?
 
     /// Active provider filter for the whole UI (nil = All).
     var providerFilter: Provider?
+
+    // MARK: - Staleness preference
+
+    /// Thresholds offered in the UI.
+    static let staleDayOptions = [1, 3, 7, 14, 30, 60, 90]
+    private static let staleDaysKey = "ae.staleDays.v1"
+
+    @ObservationIgnored
+    private var _staleDays = (UserDefaults.standard.object(forKey: staleDaysKey) as? Int) ?? 14
+
+    /// Days without activity before a session counts as stale. Persisted, and applied
+    /// when sessions are *read* — changing it re-labels everything without a rescan.
+    var staleDays: Int {
+        get {
+            access(keyPath: \.staleDays)
+            return _staleDays
+        }
+        set {
+            let clamped = max(1, newValue)
+            withMutation(keyPath: \.staleDays) { _staleDays = clamped }
+            UserDefaults.standard.set(clamped, forKey: Self.staleDaysKey)
+        }
+    }
+
+    /// Re-labels resumable/stale against the current `staleDays`. Live is left alone —
+    /// a running session is never stale, however old its transcript is.
+    private func restaged(_ items: [Session]) -> [Session] {
+        let cutoff = Date().addingTimeInterval(-Double(staleDays) * 86_400)
+        return items.map { s in
+            guard s.state != .live else { return s }
+            var s = s
+            s.state = s.lastActivity < cutoff ? .stale : .resumable
+            return s
+        }
+    }
 
     private func scoped<T>(_ items: [T], _ provider: (T) -> Provider) -> [T] {
         guard let f = providerFilter else { return items }
@@ -26,7 +64,7 @@ final class ElementsStore {
     var marketplaces: [MarketplaceInfo] { snapshot.marketplaces }
     var mcp: [MCPServer] { scoped(snapshot.mcp) { $0.provider } }
     var hooks: [HookInfo] { scoped(snapshot.hooks) { $0.provider } }
-    var sessions: [Session] { scoped(snapshot.sessions) { $0.provider } }
+    var sessions: [Session] { restaged(scoped(snapshot.sessions) { $0.provider }) }
     var plans: [PlanDoc] { scoped(snapshot.plans) { $0.provider } }
     var tasks: [BgTask] { scoped(snapshot.tasks) { $0.provider } }
     var projects: [ProjectInfo] { scoped(snapshot.projects) { $0.provider } }
@@ -43,8 +81,37 @@ final class ElementsStore {
     func sessionCount(for provider: Provider) -> Int { snapshot.sessions.filter { $0.provider == provider }.count }
 
     var liveSessions: [Session] { sessions.filter { $0.state == .live } }
-    var staleSessions: [Session] { sessions.filter { $0.state == .stale } }
+    var staleSessions: [Session] { staleSessions(olderThan: staleDays) }
+
+    /// Stale against an arbitrary threshold — independent of the current preference,
+    /// so callers can preview what another cut-off would select.
+    func staleSessions(olderThan days: Int) -> [Session] {
+        let cutoff = Date().addingTimeInterval(-Double(days) * 86_400)
+        return sessions.filter { $0.state != .live && $0.lastActivity < cutoff }
+    }
     var totalSessionBytes: Int { sessions.reduce(0) { $0 + $1.sizeBytes } }
+
+    /// One entry per distinct project that has sessions — drives the Sessions project filter.
+    struct SessionProject: Identifiable, Hashable, Sendable {
+        let id: String        // Session.projectKey
+        let name: String
+        let count: Int
+    }
+
+    var sessionProjects: [SessionProject] {
+        var byKey: [String: (name: String, count: Int)] = [:]
+        for s in sessions {
+            let cur = byKey[s.projectKey] ?? (s.projectName, 0)
+            byKey[s.projectKey] = (cur.name, cur.count + 1)
+        }
+        return byKey
+            .map { SessionProject(id: $0.key, name: $0.value.name, count: $0.value.count) }
+            .sorted {
+                $0.count == $1.count
+                    ? $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                    : $0.count > $1.count
+            }
+    }
     var activeFill: Int? { liveSessions.compactMap(\.contextFill).max() }
 
     // MARK: - Analytics rollups
@@ -116,14 +183,31 @@ final class ElementsStore {
         }
     }
 
+    /// Two-stage scan. The light inventory (skills, agents, commands, plugins, MCP,
+    /// hooks, plans, tasks) is config and small Markdown files and lands in milliseconds,
+    /// so it is published on its own — the window has real content while the far larger
+    /// JSONL transcript corpus is still being read on a second detached task.
     func refresh() async {
+        guard !isLoading else { return }
         isLoading = true
-        let snap = await Task.detached(priority: .userInitiated) {
-            ScannerEngine.scanEverything()
+        isScanningSessions = true
+        defer { isLoading = false; isScanningSessions = false }
+
+        let light = await Task.detached(priority: .userInitiated) {
+            ScannerEngine.scanLight()
         }.value
-        snapshot = snap
+        var staged = light
+        // Hold on to the sessions already on screen so a rescan doesn't blank them out.
+        staged.sessions = snapshot.sessions
+        staged.projects = snapshot.projects
+        snapshot = staged
+
+        let corpus = await Task.detached(priority: .userInitiated) {
+            ScannerEngine.scanTranscripts()
+        }.value
+        snapshot.sessions = corpus.sessions
+        snapshot.projects = corpus.projects
         lastRefresh = Date()
-        isLoading = false
     }
 
     /// Synchronous load — used by the offscreen `--render` snapshot path.
@@ -195,5 +279,46 @@ final class ElementsStore {
     func setEnabled(skill: Skill, to enabled: Bool) throws {
         guard skill.provider == .codex else { throw Mutator.MutationError.unsupported }
         try Mutator.setCodexSkillEnabled(path: skill.path, enabled: enabled)
+    }
+}
+
+// MARK: - Diagnostics (CLI verification path)
+
+extension ElementsStore {
+    /// `--selftest-sessions`: read-only check of the Sessions filters — how each
+    /// staleness threshold re-labels the real transcripts, the project rollup behind
+    /// the project filter, and what a batch delete of everything would actually target.
+    static func runSessionSelftestAndExit() -> Never {
+        let store = ElementsStore()
+        store.loadSynchronously()
+        let all = store.sessions
+
+        print("── Sessions selftest (read-only) ──")
+        print("Sessions: \(all.count)  ·  live \(store.liveSessions.count)  ·  \(Format.bytes(store.totalSessionBytes))")
+
+        print("Stale by threshold (current preference: \(store.staleDays)d):")
+        for d in staleDayOptions {
+            let stale = store.staleSessions(olderThan: d)
+            let mark = d == store.staleDays ? " ←" : ""
+            print(String(format: "  >%3dd → %3d stale · %@%@", d, stale.count,
+                         Format.bytes(stale.reduce(0) { $0 + $1.sizeBytes }), mark))
+        }
+
+        let projects = store.sessionProjects
+        print("Projects with sessions: \(projects.count)  (rollup covers \(projects.reduce(0) { $0 + $1.count })/\(all.count))")
+        for p in projects.prefix(8) { print("  \(p.count)× \(p.name)") }
+        if projects.count > 8 { print("  … \(projects.count - 8) more") }
+
+        // Every session must land in exactly one project bucket.
+        let keys = Set(projects.map(\.id))
+        let orphans = all.filter { !keys.contains($0.projectKey) }
+        print("Unbucketed sessions: \(orphans.count)\(orphans.isEmpty ? " ✓" : " ✗")")
+
+        // A "select all → delete" never includes a live session.
+        let deletable = all.filter { $0.state != .live }
+        print("Select-all batch delete would target \(deletable.count) of \(all.count) " +
+              "(\(all.count - deletable.count) live held back)\(deletable.contains { $0.state == .live } ? " ✗" : " ✓")")
+        print("──────────────────────────")
+        exit(0)
     }
 }
