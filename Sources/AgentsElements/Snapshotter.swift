@@ -22,10 +22,23 @@ enum Snapshotter {
         case "markdown": content = AnyView(MarkdownPoster(store: store))
         case "welcome": content = AnyView(WelcomeSheet(onDismiss: {}).padding(40).background(DeckBackground()))
         case "hero": content = AnyView(HeroBanner(store: store))
+        // The popover is a plain stack, so unlike the List-backed views it renders
+        // correctly offscreen — which makes the attention states checkable without
+        // clicking through the real menu bar.
+        case "menubar":
+            content = AnyView(MenuBarView(store: store)
+                .fixedSize()
+                .padding(30)
+                .background(DeckBackground()))
         default: content = AnyView(SnapshotPoster(store: store))
         }
 
-        let size: CGSize = mode == "hero" ? CGSize(width: 1280, height: 640) : CGSize(width: 1240, height: 860)
+        let size: CGSize
+        switch mode {
+        case "hero": size = CGSize(width: 1280, height: 640)
+        case "menubar": size = CGSize(width: 380, height: 640)
+        default: size = CGSize(width: 1240, height: 860)
+        }
         let poster = content
             .frame(width: size.width, height: size.height)
             .environment(\.colorScheme, .dark)

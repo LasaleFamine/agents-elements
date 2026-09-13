@@ -12,6 +12,10 @@ final class ElementsStore {
     /// already on screen by then, so views that need sessions can say so specifically.
     private(set) var isScanningSessions = false
     private(set) var lastRefresh: Date?
+    /// True once `loadDemo()` has run. The live-status poller reads the real ~/.claude
+    /// session files, which would otherwise overwrite the synthetic snapshot with this
+    /// machine's actual state — exactly what `--demo` exists to prevent.
+    private(set) var isDemo = false
 
     /// Active provider filter for the whole UI (nil = All).
     var providerFilter: Provider?
@@ -81,6 +85,21 @@ final class ElementsStore {
     func sessionCount(for provider: Provider) -> Int { snapshot.sessions.filter { $0.provider == provider }.count }
 
     var liveSessions: [Session] { sessions.filter { $0.state == .live } }
+
+    /// Live sessions that can't move without you: blocked on a dialog first, then the ones
+    /// sitting finished at the prompt, each oldest-first so the most neglected leads.
+    var sessionsNeedingYou: [Session] {
+        sessions
+            .filter { $0.attention?.needsYou == true }
+            .sorted {
+                let (a, b) = ($0.attention?.urgency ?? .max, $1.attention?.urgency ?? .max)
+                if a != b { return a < b }
+                return ($0.statusSince ?? .distantPast) < ($1.statusSince ?? .distantPast)
+            }
+    }
+
+    /// Sessions stopped dead on a dialog — the count worth putting in the menu bar.
+    var blockedSessions: [Session] { sessions.filter { $0.attention == .blocked } }
     var staleSessions: [Session] { staleSessions(olderThan: staleDays) }
 
     /// Stale against an arbitrary threshold — independent of the current preference,
@@ -210,6 +229,53 @@ final class ElementsStore {
         lastRefresh = Date()
     }
 
+    @ObservationIgnored private var livePoll: Task<Void, Never>?
+
+    /// Keep the live statuses current in the background, so the menu-bar badge is right
+    /// the moment you look at it rather than as of whenever you last hit refresh. Safe to
+    /// call repeatedly — the first caller wins.
+    func startLiveStatusPolling(every seconds: Double = 15) {
+        guard livePoll == nil, !isDemo else { return }
+        livePoll = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(seconds))
+                guard let self else { return }
+                self.refreshLiveStatus()
+            }
+        }
+    }
+
+    /// Re-read only the live-session files and patch what they say onto the sessions
+    /// already on screen.
+    ///
+    /// Split out from `refresh()` because the two cost wildly different amounts: this reads
+    /// a dozen small JSON files, where a full rescan re-parses the entire transcript corpus.
+    /// That gap is the whole reason a "waiting for you" indicator is worth trusting — it can
+    /// be polled cheaply, so what you see is current rather than true-as-of-the-last-scan.
+    func refreshLiveStatus() {
+        guard !isDemo else { return }
+        let (live, fill) = SessionScanner.scanLive()
+        for i in snapshot.sessions.indices {
+            // Codex liveness comes from its own process file, which this doesn't re-read;
+            // leaving those rows alone keeps whatever the full scan established.
+            guard snapshot.sessions[i].provider == .claude else { continue }
+            let info = live[snapshot.sessions[i].id]
+            snapshot.sessions[i].pid = info?.pid
+            snapshot.sessions[i].status = info?.status
+            snapshot.sessions[i].waitingFor = info?.waitingFor
+            snapshot.sessions[i].statusSince = info?.statusSince
+            snapshot.sessions[i].contextFill = fill[snapshot.sessions[i].id]
+            // A process that has exited since the last scan stops being live. Staleness is
+            // a function of file mtime, which isn't re-read here, so a session that was
+            // already stale stays stale rather than being promoted to merely resumable.
+            if info != nil {
+                snapshot.sessions[i].state = .live
+            } else if snapshot.sessions[i].state == .live {
+                snapshot.sessions[i].state = .resumable
+            }
+        }
+    }
+
     /// Synchronous load — used by the offscreen `--render` snapshot path.
     func loadSynchronously() {
         snapshot = ScannerEngine.scanEverything()
@@ -219,6 +285,9 @@ final class ElementsStore {
     /// Loads a fully synthetic snapshot — used by `--render … --demo` so published
     /// screenshots never contain real ~/.claude or ~/.codex data.
     func loadDemo() {
+        isDemo = true
+        livePoll?.cancel()
+        livePoll = nil
         snapshot = DemoData.snapshot
         lastRefresh = Date()
     }
@@ -336,6 +405,28 @@ extension ElementsStore {
         // Every session must still render something.
         let blank = all.filter { $0.displayTitle.isEmpty }
         print("Sessions with no display title at all: \(blank.count)\(blank.isEmpty ? " ✓" : " ✗")")
+
+        // Attention. Every session reporting one must be live, and every live Claude
+        // session should report one — a live session with no attention state means the
+        // status field stopped being read.
+        print("Attention:")
+        for a: Attention in [.blocked, .yourTurn, .working] {
+            let n = all.filter { $0.attention == a }.count
+            guard n > 0 else { continue }
+            print("  " + a.rawValue.padding(toLength: 12, withPad: " ", startingAt: 0)
+                  + String(format: "%3d", n))
+        }
+        let needy = store.sessionsNeedingYou
+        print("Needs you: \(needy.count) (\(store.blockedSessions.count) blocked)")
+        for s in needy.prefix(8) {
+            let age = s.statusSince.map { Format.elapsed(since: $0) } ?? "?"
+            print("  \(s.attention?.rawValue.padding(toLength: 9, withPad: " ", startingAt: 0) ?? "") " +
+                  "\(age.padding(toLength: 5, withPad: " ", startingAt: 0)) \(s.displayTitle)")
+        }
+        let ghosts = all.filter { $0.attention != nil && $0.state != .live }
+        print("Attention on a non-live session: \(ghosts.count)\(ghosts.isEmpty ? " ✓" : " ✗")")
+        let mute = all.filter { $0.state == .live && $0.provider == .claude && $0.attention == nil }
+        print("Live Claude sessions with no status: \(mute.count)\(mute.isEmpty ? " ✓" : " ✗")")
         print("──────────────────────────")
         exit(0)
     }

@@ -464,6 +464,9 @@ enum CodexScanner {
             firstActivity: firstTs, lastActivity: mtime,
             lastPrompt: lastUserMessage.map { String($0.prefix(300)) }, sizeBytes: size,
             path: file.path, state: state, pid: pid, status: pid != nil ? "running" : nil,
+            // Codex publishes no turn state — "running" deliberately isn't one of the
+            // values `Attention` recognises, so these read as unknown rather than idle.
+            waitingFor: nil, statusSince: nil,
             contextFill: nil, subagentRuns: 0,
             usage: usage.total > 0 ? [usage] : [], provider: .codex,
             title: resolved.title, titleSource: resolved.source, humanTurns: humanTurns

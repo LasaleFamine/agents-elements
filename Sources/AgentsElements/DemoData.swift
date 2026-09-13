@@ -17,7 +17,7 @@ enum DemoData {
     private static func sess(_ id: String, _ name: String?, _ project: String, _ model: String,
                              msgs: Int, days: Double, input: Int, output: Int, cacheRead: Int,
                              prompt: String, state: SessionState = .resumable, fill: Int? = nil,
-                             provider: Provider = .claude) -> Session {
+                             provider: Provider = .claude, status: String? = nil) -> Session {
         let cwd = "/Users/dev/code/\(project)"
         return Session(
             id: id, name: name, cwd: cwd, projectDir: project, projectName: project,
@@ -26,7 +26,9 @@ enum DemoData {
             lastPrompt: prompt, sizeBytes: msgs * 4_200,
             path: "\(cwd)/.session/\(id).jsonl",
             state: state, pid: state == .live ? 4242 : nil,
-            status: state == .live ? (fill != nil ? "busy" : "idle") : nil,
+            status: state == .live ? (status ?? (fill != nil ? "busy" : "idle")) : nil,
+            waitingFor: status == "waiting" ? "dialog open" : nil,
+            statusSince: state == .live ? daysAgo(days) : nil,
             contextFill: fill, subagentRuns: msgs / 9,
             usage: [use(model, input, output, cacheRead)], provider: provider,
             title: name, titleSource: name == nil ? .none : .generated,
@@ -157,6 +159,11 @@ enum DemoData {
             sess("s2", "Forecast widget", "nimbus-weather", "gpt-5.5",
                  msgs: 31, days: 0.05, input: 90_000, output: 28_000, cacheRead: 600_000,
                  prompt: "Add a 7-day forecast widget to the home screen", state: .live, fill: 38, provider: .codex),
+            // One blocked session, so the demo art shows what the attention states look like.
+            sess("s2b", "Migration rollback", "ledger-cli", "claude-opus-4-8",
+                 msgs: 19, days: 0.31, input: 60_000, output: 14_000, cacheRead: 300_000,
+                 prompt: "Roll back the 0042 migration and re-run it cleanly",
+                 state: .live, status: "waiting"),
             sess("s3", "Dark mode", "inkwell-blog", "claude-sonnet-4-6",
                  msgs: 22, days: 1, input: 70_000, output: 19_000, cacheRead: 400_000,
                  prompt: "Add a dark mode toggle and persist the choice"),

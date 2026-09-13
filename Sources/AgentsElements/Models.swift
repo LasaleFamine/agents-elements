@@ -173,6 +173,45 @@ enum SessionState: String, Sendable, Hashable {
     case live, resumable, stale
 }
 
+/// Whether a running session needs you, and how badly.
+///
+/// Claude Code tracks this in its own live-session file and rewrites it as a turn
+/// progresses, so these are its states rather than something we infer from the shape of a
+/// transcript. They only mean anything while the process is alive: a session nobody is
+/// running isn't waiting for an answer, it's just over.
+///
+/// Codex has no equivalent on disk — it runs inside ChatGPT.app with no per-session status
+/// file — so Codex sessions report `nil` here rather than a guess.
+enum Attention: String, Sendable, Hashable {
+    case blocked    // a dialog is open: a permission prompt, a question, a plan to approve
+    case yourTurn   // the agent finished its turn and is sitting at the prompt
+    case working    // mid-turn — nothing for you to do
+
+    /// Maps Claude Code's own `status` values. An unrecognised one yields `nil` rather
+    /// than a guess, so a status added in a future release can't silently read as "done".
+    init?(status: String?) {
+        switch status {
+        case "waiting": self = .blocked
+        case "idle":    self = .yourTurn
+        case "busy":    self = .working
+        default:        return nil
+        }
+    }
+
+    /// `working` is the only state you can safely walk away from.
+    var needsYou: Bool { self != .working }
+
+    /// Blocked first, then turn-finished: a session that can't proceed without a click
+    /// outranks one that is merely idle, however long each has been sitting.
+    var urgency: Int {
+        switch self {
+        case .blocked: return 0
+        case .yourTurn: return 1
+        case .working: return 2
+        }
+    }
+}
+
 /// Where a session's title came from. Both CLIs generate titles of their own and write them
 /// to disk; we prefer those over anything we derive, and the source is worth keeping because
 /// a user-set name is authoritative while a generated one is only ever a good guess.
@@ -204,9 +243,12 @@ struct Session: Identifiable, Hashable, Sendable {
     let sizeBytes: Int
     let path: String
     var state: SessionState
-    let pid: Int?
-    let status: String?       // "busy"/"idle" when live
-    let contextFill: Int?     // % when this is the active session
+    // Facts about a running process, refreshed on their own without a transcript rescan.
+    var pid: Int?
+    var status: String?       // "busy"/"idle"/"waiting" — nil unless the process is alive
+    var waitingFor: String?   // what the open dialog is, when the session is blocked on one
+    var statusSince: Date?    // when it entered the status it's in now
+    var contextFill: Int?     // % when this is the active session
     let subagentRuns: Int     // nested subagent sidechain transcripts this session spawned
     let usage: [ModelUsage]   // token usage per model, aggregated from the transcript
     var provider: Provider = .claude
@@ -225,6 +267,11 @@ struct Session: Identifiable, Hashable, Sendable {
         if let n = name, !n.isEmpty { return n }
         return projectName
     }
+
+    /// What this session wants from you right now, or `nil` when that isn't knowable —
+    /// a process that has exited, or a Codex thread. Derived from `status`, which is only
+    /// ever set for a live session, so this is live-only without having to say so.
+    var attention: Attention? { Attention(status: status) }
 
     var inputTokens: Int { usage.reduce(0) { $0 + $1.input } }
     var outputTokens: Int { usage.reduce(0) { $0 + $1.output } }

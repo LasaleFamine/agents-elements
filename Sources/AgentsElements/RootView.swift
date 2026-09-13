@@ -26,6 +26,8 @@ struct RootView: View {
         .sheet(isPresented: $chrome.showHelp) { HelpView() }
         .task {
             if store.lastRefresh == nil { await store.refresh() }
+            // Keeps the menu-bar badge honest even while no window is open.
+            store.startLiveStatusPolling()
             if !hasSeenWelcome { chrome.showWelcome = true }
         }
     }

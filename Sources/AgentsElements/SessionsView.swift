@@ -6,6 +6,7 @@ struct SessionsView: View {
 
     @State private var query = ""
     @State private var filter: SessionState?
+    @State private var needsYouOnly = false
     @State private var projectFilter: String?           // Session.projectKey; nil = every project
     @State private var selection: Set<Session.ID> = []
     @State private var confirmStaleCleanup = false
@@ -18,6 +19,7 @@ struct SessionsView: View {
     private var filtered: [Session] {
         store.sessions.filter { s in
             (filter == nil || s.state == filter)
+            && (!needsYouOnly || s.attention?.needsYou == true)
             && (projectFilter == nil || s.projectKey == projectFilter)
             && (query.isEmpty
                 || s.projectName.localizedCaseInsensitiveContains(query)
@@ -158,6 +160,7 @@ struct SessionsView: View {
                 chip("Resumable", .resumable, store.sessions.filter { $0.state == .resumable }.count, .blue)
                 chip("Stale", .stale, store.staleSessions.count, .secondary)
                 Spacer()
+                needsYouChip
             }
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary).font(.caption)
@@ -178,6 +181,28 @@ struct SessionsView: View {
             }
         }
         .padding(.horizontal, 12).padding(.top, 10).padding(.bottom, 8)
+    }
+
+    /// Orthogonal to the state chips — a session can be live *and* stuck on you, and that
+    /// combination is the one worth isolating.
+    private var needsYouChip: some View {
+        let count = store.sessionsNeedingYou.count
+        let blocked = store.blockedSessions.count
+        let color = blocked > 0 ? Attention.blocked.color : Color.secondary
+        return Button { needsYouOnly.toggle() } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "hand.raised.fill").font(.system(size: 9, weight: .bold))
+                Text("Needs you").font(.caption.weight(.medium))
+                Text("\(count)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 9).padding(.vertical, 4)
+            .background(needsYouOnly ? color.opacity(0.2) : Color.clear, in: Capsule())
+            .overlay(Capsule().strokeBorder(needsYouOnly ? color.opacity(0.5) : Color(nsColor: .separatorColor), lineWidth: 0.5))
+            .foregroundStyle(needsYouOnly || blocked > 0 ? color : Color.primary)
+        }
+        .buttonStyle(.plain)
+        .help("Live sessions that can't continue without an answer from you")
+        .disabled(count == 0 && !needsYouOnly)
     }
 
     private func chip(_ label: String, _ value: SessionState?, _ count: Int, _ color: Color) -> some View {
@@ -394,8 +419,11 @@ struct SessionRow: View {
     let session: Session
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: session.state.systemImage)
-                .font(.caption).foregroundStyle(session.state.color)
+            // A blocked session outranks its own state glyph: "live" is true but useless
+            // next to "stopped, waiting on you".
+            Image(systemName: session.attention == .blocked ? "hand.raised.fill" : session.state.systemImage)
+                .font(.caption)
+                .foregroundStyle(session.attention == .blocked ? Attention.blocked.color : session.state.color)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -409,6 +437,9 @@ struct SessionRow: View {
                 // The title now carries the identity, so the project name — previously the
                 // row's headline — moves here rather than disappearing.
                 HStack(spacing: 5) {
+                    if let a = session.attention, a.needsYou {
+                        AttentionChip(attention: a, since: session.statusSince)
+                    }
                     Text(session.projectName).foregroundStyle(.secondary)
                     if let branch = session.gitBranch, !branch.isEmpty {
                         Text("·").foregroundStyle(.quaternary)
@@ -449,6 +480,7 @@ struct SessionDetail: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 header
+                blockedNotice
                 about
                 if let prompt = session.lastPrompt {
                     VStack(alignment: .leading, spacing: 6) {
@@ -475,6 +507,32 @@ struct SessionDetail: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("\(session.path)\n\nGoes to the macOS Trash — recoverable.")
+        }
+    }
+
+    /// A session stopped on a dialog is the one thing on this screen you can act on right
+    /// now, so it gets a card rather than a chip.
+    @ViewBuilder
+    private var blockedNotice: some View {
+        if session.attention == .blocked {
+            HStack(alignment: .top, spacing: 9) {
+                Image(systemName: "hand.raised.fill").foregroundStyle(Attention.blocked.color)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(session.statusSince.map { "Waiting on you for \(Format.elapsed(since: $0))" }
+                         ?? "Waiting on you")
+                        .font(.callout.weight(.semibold))
+                    Text("A dialog is open in this session's terminal — a permission prompt, a question, or a plan to approve. Nothing moves until you answer there.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Attention.blocked.color.opacity(0.12),
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Attention.blocked.color.opacity(0.3), lineWidth: 0.8))
         }
     }
 
@@ -506,6 +564,9 @@ struct SessionDetail: View {
             HStack(spacing: 10) {
                 if let fill = session.contextFill { ContextRing(percent: fill, size: 42) }
                 ProviderBadge(provider: session.provider)
+                if let a = session.attention {
+                    AttentionChip(attention: a, since: session.statusSince)
+                }
                 StateBadge(state: session.state, status: session.status)
             }
         }

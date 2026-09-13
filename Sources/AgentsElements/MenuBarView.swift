@@ -1,22 +1,49 @@
 import SwiftUI
 import AppKit
+import Combine
 
-/// Compact menu-bar popover: live sessions at a glance + quick counts.
+/// Compact menu-bar popover. Its one job is the question you have when you sit back down:
+/// *which of these is waiting on me?* Sessions that need an answer lead, longest-waiting
+/// first; the ones still working are collapsed to a count, because there is nothing to do
+/// about them.
 struct MenuBarView: View {
     @Bindable var store: ElementsStore
+
     @Environment(\.openWindow) private var openWindow
+
+    /// Statuses are re-read on a short cadence while the popover is open. This only reads
+    /// the handful of small live-session files, never the transcript corpus, so it is far
+    /// cheaper than a refresh and can run this often.
+    private let tick = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
+
+    /// Beyond this the popover stops being glanceable; the overflow gets a count.
+    private static let maxRows = 6
+
+    private var needsYou: [Session] { store.sessionsNeedingYou }
+    private var working: [Session] { store.liveSessions.filter { $0.attention == .working } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             divider
-            if store.liveSessions.isEmpty {
-                Text("No live sessions").microLabel().foregroundStyle(Palette.textTertiary)
+            attentionSummary
+            divider
+            if needsYou.isEmpty {
+                Text(store.liveSessions.isEmpty
+                     ? "No live sessions"
+                     : "Nothing waiting on you — every live session is busy.")
+                    .microLabel().foregroundStyle(Palette.textTertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(14)
             } else {
                 VStack(spacing: 2) {
-                    ForEach(store.liveSessions) { liveRow($0) }
+                    ForEach(needsYou.prefix(Self.maxRows)) { sessionRow($0) }
+                    if needsYou.count > Self.maxRows {
+                        Text("+\(needsYou.count - Self.maxRows) more waiting")
+                            .microLabel().foregroundStyle(Palette.textTertiary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 8).padding(.top, 4)
+                    }
                 }
                 .padding(8)
             }
@@ -29,6 +56,11 @@ struct MenuBarView: View {
         .background(DeckBackground())
         .tint(Palette.accent)
         .preferredColorScheme(.dark)
+        .onAppear {
+            store.refreshLiveStatus()
+            store.startLiveStatusPolling()
+        }
+        .onReceive(tick) { _ in store.refreshLiveStatus() }
     }
 
     private var divider: some View { Rectangle().fill(Palette.stroke).frame(height: 1) }
@@ -47,25 +79,60 @@ struct MenuBarView: View {
         .padding(11)
     }
 
-    private func liveRow(_ s: Session) -> some View {
+    /// One line that answers the question without reading any rows.
+    private var attentionSummary: some View {
+        let blocked = needsYou.filter { $0.attention == .blocked }.count
+        let turn = needsYou.count - blocked
+        return HStack(spacing: 8) {
+            Image(systemName: blocked > 0 ? "hand.raised.fill" : "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(blocked > 0 ? Attention.blocked.color : Palette.live)
+            Text(summaryText(blocked: blocked, turn: turn))
+                .font(.caption.weight(.medium)).foregroundStyle(Palette.textPrimary)
+            Spacer()
+            if !working.isEmpty {
+                Text("\(working.count) working").microLabel().foregroundStyle(Palette.textTertiary)
+            }
+        }
+        .padding(.horizontal, 11).padding(.vertical, 8)
+        .background(blocked > 0 ? Attention.blocked.color.opacity(0.12) : Color.clear)
+    }
+
+    private func summaryText(blocked: Int, turn: Int) -> String {
+        switch (blocked, turn) {
+        case (0, 0): return store.liveSessions.isEmpty ? "Nothing running" : "All clear"
+        case (0, let t): return "\(t) waiting for your next prompt"
+        case (let b, 0): return "\(b) stopped, waiting on you"
+        case (let b, let t): return "\(b) stopped · \(t) awaiting a prompt"
+        }
+    }
+
+    private func sessionRow(_ s: Session) -> some View {
         Button { openDashboard() } label: {
             HStack(spacing: 9) {
-                PulseDot(size: 7)
-                VStack(alignment: .leading, spacing: 1) {
+                if s.attention == .blocked {
+                    Circle().fill(Attention.blocked.color).frame(width: 7, height: 7)
+                } else {
+                    PulseDot(size: 7)
+                }
+                VStack(alignment: .leading, spacing: 2) {
                     Text(s.displayTitle).font(.callout.weight(.medium))
                         .foregroundStyle(Palette.textPrimary).lineLimit(1)
-                    Text(s.status ?? "running").microLabel().foregroundStyle(Palette.textTertiary)
+                    HStack(spacing: 5) {
+                        if let a = s.attention {
+                            AttentionChip(attention: a, since: s.statusSince)
+                        }
+                        Text(s.projectName).microLabel().foregroundStyle(Palette.textTertiary)
+                            .lineLimit(1)
+                    }
                 }
-                Spacer()
-                if let m = s.model {
-                    Text(m.replacingOccurrences(of: "claude-", with: ""))
-                        .font(.caption2.monospaced()).foregroundStyle(Palette.textSecondary)
-                }
+                Spacer(minLength: 4)
             }
             .padding(.horizontal, 8).padding(.vertical, 6)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help(s.waitingFor.map { "Blocked: \($0)" } ?? s.cwd)
     }
 
     private var countsRow: some View {

@@ -9,6 +9,8 @@ enum SessionScanner {
         let status: String?
         let name: String?
         let cwd: String?
+        let waitingFor: String?
+        let statusSince: Date?
     }
 
     private static let staleThreshold: TimeInterval = 14 * 86_400
@@ -24,8 +26,15 @@ enum SessionScanner {
                       let sid = obj["sessionId"] as? String,
                       let pid = obj["pid"] as? Int,
                       FS.processAlive(pid) else { continue }
+                // `waitingFor` is only written while a dialog is up, and names it
+                // ("dialog open"). `statusUpdatedAt` is epoch milliseconds and is what
+                // makes the state actionable: blocked for a minute is normal, blocked
+                // since last Tuesday is a session you have forgotten about.
+                let since = (obj["statusUpdatedAt"] as? Double) ?? (obj["updatedAt"] as? Double)
                 live[sid] = LiveInfo(pid: pid, status: obj["status"] as? String,
-                                     name: obj["name"] as? String, cwd: obj["cwd"] as? String)
+                                     name: obj["name"] as? String, cwd: obj["cwd"] as? String,
+                                     waitingFor: obj["waitingFor"] as? String,
+                                     statusSince: since.map { Date(timeIntervalSince1970: $0 / 1000) })
             }
         }
         var fill: [String: Int] = [:]
@@ -215,6 +224,7 @@ enum SessionScanner {
             gitBranch: branch, version: version, model: model, messageCount: msgCount,
             firstActivity: firstTs, lastActivity: mtime, lastPrompt: lastPrompt, sizeBytes: size,
             path: file.path, state: state, pid: live[sid]?.pid, status: live[sid]?.status,
+            waitingFor: live[sid]?.waitingFor, statusSince: live[sid]?.statusSince,
             contextFill: fill[sid], subagentRuns: subagentRuns,
             usage: usageByModel.values.sorted { $0.total > $1.total },
             title: resolved.title, titleSource: resolved.source, humanTurns: humanTurns

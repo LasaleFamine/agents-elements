@@ -138,6 +138,15 @@ enum Format {
         let f = RelativeDateTimeFormatter(); f.unitsStyle = .abbreviated
         return f.localizedString(for: date, relativeTo: Date())
     }
+    /// Compact elapsed time — "40s", "12m", "3h", "6d". Distinct from `relative`, which
+    /// reads "3 hr ago": here the duration itself is the subject, not when it happened.
+    static func elapsed(since date: Date) -> String {
+        let s = max(0, Date().timeIntervalSince(date))
+        if s < 60 { return "\(Int(s))s" }
+        if s < 3_600 { return "\(Int(s / 60))m" }
+        if s < 86_400 { return "\(Int(s / 3_600))h" }
+        return "\(Int(s / 86_400))d"
+    }
     static func compact(_ n: Int) -> String {
         if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
         if n >= 1_000 { return String(format: "%.1fk", Double(n) / 1_000) }
@@ -174,6 +183,57 @@ struct ProviderBadge: View {
         .overlay(Capsule().strokeBorder(provider.tint.opacity(0.35), lineWidth: 0.6))
         .foregroundStyle(provider.tint)
         .help(provider.label)
+    }
+}
+
+extension Attention {
+    var color: Color {
+        switch self {
+        case .blocked: return Color(hex: 0xFBBF24)   // amber — stopped, needs a decision
+        case .yourTurn: return Palette.accent
+        case .working: return Palette.live
+        }
+    }
+    var label: String {
+        switch self {
+        case .blocked: return "Waiting on you"
+        case .yourTurn: return "Your turn"
+        case .working: return "Working"
+        }
+    }
+    var systemImage: String {
+        switch self {
+        case .blocked: return "hand.raised.fill"
+        case .yourTurn: return "bubble.left.fill"
+        case .working: return "gearshape.fill"
+        }
+    }
+}
+
+/// "Does this need me, and for how long?" The duration carries as much meaning as the
+/// state: blocked for a minute is the normal course of a turn, blocked since Tuesday is a
+/// session you forgot you left open.
+struct AttentionChip: View {
+    let attention: Attention
+    var since: Date? = nil
+    var showsLabel = true
+
+    private var text: String {
+        let base = showsLabel ? attention.label : ""
+        guard let since else { return base }
+        let elapsed = Format.elapsed(since: since)
+        return base.isEmpty ? elapsed : "\(base) · \(elapsed)"
+    }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: attention.systemImage).font(.system(size: 9, weight: .bold))
+            if !text.isEmpty { Text(text).font(.caption2.weight(.semibold)) }
+        }
+        .padding(.horizontal, 6).padding(.vertical, 2)
+        .background(attention.color.opacity(0.18), in: Capsule())
+        .overlay(Capsule().strokeBorder(attention.color.opacity(0.38), lineWidth: 0.6))
+        .foregroundStyle(attention.color)
     }
 }
 

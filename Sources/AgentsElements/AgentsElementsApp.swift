@@ -50,7 +50,12 @@ struct AgentsElementsApp: App {
         MenuBarExtra {
             MenuBarView(store: store)
         } label: {
-            Label("\(store.liveSessions.count)", systemImage: "square.grid.2x2.fill")
+            // Blocked sessions get the badge, not merely live ones: a terminal sitting
+            // idle at a prompt is the normal resting state and would drown the signal.
+            // The count only appears when something is genuinely stuck on you.
+            let blocked = store.blockedSessions.count
+            Label("\(blocked > 0 ? blocked : store.liveSessions.count)",
+                  systemImage: blocked > 0 ? "hand.raised.fill" : "square.grid.2x2.fill")
         }
         .menuBarExtraStyle(.window)
     }

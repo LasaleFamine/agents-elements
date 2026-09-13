@@ -407,7 +407,9 @@ enum ScannerEngine {
         print("Disabled skills: \(disabledSkills.count)\(disabledSkills.isEmpty ? "" : " — " + disabledSkills.map(\.name).joined(separator: ", "))")
         print("──────────────────────────")
         for sess in s.sessions.filter({ $0.state == .live }) {
-            print("  LIVE  \(sess.id.prefix(8))  \(sess.displayTitle)  pid=\(sess.pid ?? -1)  \(sess.status ?? "")")
+            let wait = sess.statusSince.map { " for \(Format.elapsed(since: $0))" } ?? ""
+            print("  LIVE  \(sess.id.prefix(8))  \(sess.displayTitle)  pid=\(sess.pid ?? -1)  " +
+                  "\(sess.status ?? "")\(wait)\(sess.waitingFor.map { " (\($0))" } ?? "")")
         }
         exit(0)
     }
