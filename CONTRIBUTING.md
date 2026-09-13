@@ -44,7 +44,7 @@ swift run AgentsElements -- --scan-dump            # print parsed counts, tokens
 swift run AgentsElements -- --scan-detail          # one line per session (title, source, turns) — diff before/after a scanner change
 swift run AgentsElements -- --selftest-sessions    # read-only check of the session filters
 swift run AgentsElements -- --selftest-mutations   # dry-run plugin/skill toggles (writes nothing)
-swift run AgentsElements -- --render out.png [overview|insights|relationships|markdown|hero|welcome]
+swift run AgentsElements -- --render out.png [overview|insights|relationships|markdown|hero|welcome|menubar]
 ```
 
 `--render` uses SwiftUI's `ImageRenderer`, so screenshots work without Screen-Recording

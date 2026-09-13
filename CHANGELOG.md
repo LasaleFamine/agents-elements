@@ -5,6 +5,19 @@ All notable changes to this project are documented here.
 ## [Unreleased]
 
 ### Added
+- **Sessions say whether they're waiting on you.** The menu bar now leads with the
+  sessions that can't move without an answer — a permission prompt, a question, or a plan
+  waiting to be approved — longest-waiting first, and says how long each has been stuck.
+  Claude Code already tracks this in its own live-session file and it wasn't being read.
+  Three states are distinguished: *waiting on you* (a dialog is open and the turn is
+  stopped), *your turn* (the agent finished and is at the prompt), and *working*. The
+  menu-bar icon only badges a count when something is genuinely blocked, so an idle
+  terminal doesn't drown the signal. Also surfaced in the session list, as a *Needs you*
+  filter, and as a card in the detail pane. Codex publishes no equivalent, so Codex
+  sessions report nothing rather than a guess.
+- Live statuses refresh on their own — every 5s while the menu bar is open and every 15s
+  in the background — without re-reading the transcript corpus, so what you see is current
+  rather than true-as-of-the-last-scan.
 - **Sessions say what they're about.** Every session now carries a real title instead of
   showing its folder name. Both CLIs already generate one and write it to disk — Claude Code
   as `ai-title` / `custom-title` records inside the transcript, Codex as a row in its own
@@ -26,6 +39,7 @@ All notable changes to this project are documented here.
 - Right-click menu on the session list (Reveal in Finder / Move to Trash).
 - `--selftest-sessions`, a read-only CLI check of the session filters and batch-delete targets.
 - `--scan-detail`, a deterministic per-session dump for diffing scanner changes.
+- `--render <png> menubar`, an offscreen render of the menu-bar popover.
 
 ### Changed
 - **Startup is ~100× faster.** Scanning the session corpus went from ~27s to ~0.2s on a

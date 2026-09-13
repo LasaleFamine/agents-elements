@@ -48,7 +48,8 @@ enable/disable plugins and skills — for **Claude Code and Codex**, together or
 - **🟢 Live & historical sessions** — every session named by **what it's about**, not the
   folder it ran in: both CLIs already generate a title and write it to disk, and this reads
   it (falling back to your opening prompt, and saying which you're looking at). Live /
-  Resumable / Stale at a glance, with model, branch, turns, token usage and last prompt.
+  Resumable / Stale at a glance — plus **whether it's waiting on an answer from you** —
+  with model, branch, turns, token usage and last prompt.
   **Search by title**, **filter by project**, **choose what counts as stale** (1–90 days,
   remembered), and **⌘/⇧-click to select many at once**. Copy a recall command, Reveal in
   Finder, or clean up transcripts to the Trash — one, a batch, or every stale one
@@ -63,7 +64,12 @@ enable/disable plugins and skills — for **Claude Code and Codex**, together or
   behind a confirmation dialog. Every write is **path-locked and backed up first.**
 - **🧭 Relationships** — trace each subagent's tools, each plugin's contributions, and each
   project's scoped commands + MCP servers.
-- **📍 Menu-bar extra** — live sessions and quick counts one click away.
+- **📍 Menu-bar extra** — **which sessions are waiting on you**, longest-waiting first, one
+  click away. Claude Code records whether a session is stopped on a dialog, finished and
+  sitting at the prompt, or still working; the menu bar leads with the stuck ones and says
+  how long each has been stuck, and only badges its icon when something is genuinely
+  blocked. Statuses refresh on their own, without re-reading transcripts. (Codex publishes
+  no equivalent, so its sessions report nothing rather than a guess.)
 
 **Look & feel — "Command Deck":** a dark, near-black mission-control canvas with a
 violet→indigo accent, category-tinted glowing cards, monospace micro-labels, and live-item
