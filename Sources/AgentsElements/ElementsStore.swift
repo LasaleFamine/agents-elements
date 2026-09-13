@@ -86,16 +86,44 @@ final class ElementsStore {
 
     var liveSessions: [Session] { sessions.filter { $0.state == .live } }
 
-    /// Live sessions that can't move without you: blocked on a dialog first, then the ones
-    /// sitting finished at the prompt, each oldest-first so the most neglected leads.
+    private static let recentFirstKey = "ae.needsYouRecentFirst.v1"
+
+    @ObservationIgnored
+    private var _needsYouRecentFirst =
+        (UserDefaults.standard.object(forKey: recentFirstKey) as? Bool) ?? true
+
+    /// How `sessionsNeedingYou` is ordered. Persisted, and applied without a rescan.
+    var needsYouRecentFirst: Bool {
+        get {
+            access(keyPath: \.needsYouRecentFirst)
+            return _needsYouRecentFirst
+        }
+        set {
+            withMutation(keyPath: \.needsYouRecentFirst) { _needsYouRecentFirst = newValue }
+            UserDefaults.standard.set(newValue, forKey: Self.recentFirstKey)
+        }
+    }
+
+    /// Live sessions that can't move without you.
+    ///
+    /// Order is a real choice, not a detail. Leading with the longest-waiting sounds right
+    /// and isn't: a handful of work sessions blocked since Monday will bury the thing you
+    /// were doing an hour ago, every time you sit down. Recency answers "what was I just
+    /// on?", which is the question you actually have — so it is the default, and urgency
+    /// is carried by the chip and the menu-bar badge instead of by position. The old order
+    /// stays available for the other question: "what have I abandoned?"
     var sessionsNeedingYou: [Session] {
-        sessions
-            .filter { $0.attention?.needsYou == true }
-            .sorted {
-                let (a, b) = ($0.attention?.urgency ?? .max, $1.attention?.urgency ?? .max)
-                if a != b { return a < b }
-                return ($0.statusSince ?? .distantPast) < ($1.statusSince ?? .distantPast)
+        let needy = sessions.filter { $0.attention?.needsYou == true }
+        guard !needsYouRecentFirst else {
+            return needy.sorted {
+                ($0.statusSince ?? .distantPast) > ($1.statusSince ?? .distantPast)
             }
+        }
+        return needy.sorted {
+            let (a, b) = ($0.attention?.urgency ?? .max, $1.attention?.urgency ?? .max)
+            if a != b { return a < b }
+            return ($0.statusSince ?? .distantPast) < ($1.statusSince ?? .distantPast)
+        }
     }
 
     /// Sessions stopped dead on a dialog — the count worth putting in the menu bar.

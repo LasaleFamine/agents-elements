@@ -28,6 +28,7 @@ struct MenuBarView: View {
             divider
             attentionSummary
             divider
+            sortRow
             if needsYou.isEmpty {
                 Text(store.liveSessions.isEmpty
                      ? "No live sessions"
@@ -38,11 +39,23 @@ struct MenuBarView: View {
             } else {
                 VStack(spacing: 2) {
                     ForEach(needsYou.prefix(Self.maxRows)) { sessionRow($0) }
+                    // Recency ordering can push every blocked session past the cut — which
+                    // is the right default, but the band above still says "5 stopped", so
+                    // the overflow has to account for them rather than swallow them.
                     if needsYou.count > Self.maxRows {
-                        Text("+\(needsYou.count - Self.maxRows) more waiting")
-                            .microLabel().foregroundStyle(Palette.textTertiary)
+                        let hidden = needsYou.dropFirst(Self.maxRows)
+                        let stopped = hidden.filter { $0.attention == .blocked }.count
+                        Text(stopped > 0
+                             ? "+\(hidden.count) more · \(stopped) stopped"
+                             : "+\(hidden.count) more waiting")
+                            .microLabel()
+                            .foregroundStyle(stopped > 0 ? Attention.blocked.color.opacity(0.8)
+                                                         : Palette.textTertiary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 8).padding(.top, 4)
+                            .help(stopped > 0
+                                  ? "Switch to “Longest waiting” to bring the stopped sessions to the top"
+                                  : "Open the dashboard to see them all")
                     }
                 }
                 .padding(8)
@@ -90,12 +103,41 @@ struct MenuBarView: View {
             Text(summaryText(blocked: blocked, turn: turn))
                 .font(.caption.weight(.medium)).foregroundStyle(Palette.textPrimary)
             Spacer()
-            if !working.isEmpty {
-                Text("\(working.count) working").microLabel().foregroundStyle(Palette.textTertiary)
-            }
         }
         .padding(.horizontal, 11).padding(.vertical, 8)
         .background(blocked > 0 ? Attention.blocked.color.opacity(0.12) : Color.clear)
+    }
+
+    /// Which end of the list you care about depends on why you're looking: picking up
+    /// where you left off, or sweeping up what you walked away from.
+    @ViewBuilder
+    private var sortRow: some View {
+        if !needsYou.isEmpty || !working.isEmpty {
+            HStack(spacing: 6) {
+                if needsYou.count > 1 {
+                    Button { store.needsYouRecentFirst.toggle() } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: store.needsYouRecentFirst
+                                  ? "clock.arrow.circlepath" : "hourglass")
+                                .font(.system(size: 8, weight: .bold))
+                            Text(store.needsYouRecentFirst ? "Recent first" : "Longest waiting")
+                                .font(.caption2.weight(.medium))
+                        }
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(Palette.surfaceHi, in: Capsule())
+                        .foregroundStyle(Palette.textSecondary)
+                        .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Switch between what you touched most recently and what has been waiting longest")
+                }
+                Spacer()
+                if !working.isEmpty {
+                    Text("\(working.count) working").microLabel().foregroundStyle(Palette.textTertiary)
+                }
+            }
+            .padding(.horizontal, 11).padding(.top, 8).padding(.bottom, 1)
+        }
     }
 
     private func summaryText(blocked: Int, turn: Int) -> String {

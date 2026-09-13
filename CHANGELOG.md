@@ -15,6 +15,11 @@ All notable changes to this project are documented here.
   terminal doesn't drown the signal. Also surfaced in the session list, as a *Needs you*
   filter, and as a card in the detail pane. Codex publishes no equivalent, so Codex
   sessions report nothing rather than a guess.
+- The menu bar leads with what you touched **most recently**, so a handful of work
+  sessions blocked since Monday can't bury the thing you were on an hour ago. A toggle
+  switches to **longest-waiting** for the opposite question — what have I abandoned? — and
+  the choice is remembered. When recency pushes blocked sessions past the cut, the overflow
+  line says how many are stopped rather than swallowing them.
 - Live statuses refresh on their own — every 5s while the menu bar is open and every 15s
   in the background — without re-reading the transcript corpus, so what you see is current
   rather than true-as-of-the-last-scan.
